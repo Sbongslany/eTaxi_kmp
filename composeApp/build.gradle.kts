@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+    alias(libs.plugins.secretsGradlePlugin)
 }
 
 kotlin {
@@ -34,6 +35,11 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime)
             implementation(libs.koin.android)
+
+            // Google Maps
+            implementation(libs.play.services.maps)
+            implementation(libs.play.services.location)
+            implementation(libs.maps.compose)
         }
 
         commonMain.dependencies {

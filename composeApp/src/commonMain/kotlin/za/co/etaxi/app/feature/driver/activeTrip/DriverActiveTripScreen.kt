@@ -29,6 +29,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import za.co.etaxi.app.core.components.MockMapCanvas
+import za.co.etaxi.app.core.map.EtaxiMap
+import za.co.etaxi.app.core.map.MapCamera
+import za.co.etaxi.app.core.map.MapState
+import za.co.etaxi.app.core.map.defaultJoburgCamera
 import za.co.etaxi.app.core.theme.EtaxiColors
 import za.co.etaxi.app.core.util.formatRand
 import za.co.etaxi.app.domain.model.LatLng
@@ -44,7 +48,11 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
         val scope = rememberCoroutineScope()
         val trip by repo.activeTrip().collectAsState(initial = null)
 
-        // Simulate pushing location to backend every 3s while in progress
+        // Driver's own position (what we render + push to backend)
+        var driverPos by remember { mutableStateOf<LatLng?>(null) }
+
+        // Simulate pushing location to backend every 3s while in progress,
+        // and interpolate the visible position along the route.
         LaunchedEffect(trip?.status, trip?.id) {
             if (trip?.status == TripStatus.IN_PROGRESS) {
                 val t = trip ?: return@LaunchedEffect
@@ -55,10 +63,16 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                         (t.dropoff.location.lat - t.pickup.location.lat) * progress
                     val lng = t.pickup.location.lng +
                         (t.dropoff.location.lng - t.pickup.location.lng) * progress
-                    repo.pushLocation(t.id, LatLng(lat, lng))
+                    val pos = LatLng(lat, lng)
+                    driverPos = pos
+                    repo.pushLocation(t.id, pos)
                     delay(3_000)
                     step++
                 }
+            } else if (trip?.status == TripStatus.DRIVER_ARRIVING ||
+                       trip?.status == TripStatus.ACCEPTED) {
+                // Before starting the trip, park the driver near pickup.
+                driverPos = trip?.pickup?.location
             }
         }
 
@@ -80,13 +94,20 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
         }
 
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            MockMapCanvas(
+            EtaxiMap(
+                state = MapState(
+                    camera = MapCamera(
+                        center = driverPos
+                            ?: trip?.pickup?.location
+                            ?: defaultJoburgCamera().center,
+                        zoom = if (trip?.status == TripStatus.IN_PROGRESS) 15f else 14f,
+                        followDriver = trip?.status == TripStatus.IN_PROGRESS,
+                    ),
+                    pickup = trip?.pickup?.location,
+                    dropoff = trip?.dropoff?.location,
+                    driver = driverPos,
+                ),
                 modifier = Modifier.fillMaxSize(),
-                showPickup = trip != null,
-                showDropoff = trip != null,
-                showDriver = true,
-                animateDriver = trip?.status == TripStatus.IN_PROGRESS ||
-                    trip?.status == TripStatus.DRIVER_ARRIVING,
             )
 
             trip?.let { t ->

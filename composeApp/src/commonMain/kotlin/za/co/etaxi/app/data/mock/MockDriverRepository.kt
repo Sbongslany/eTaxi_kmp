@@ -16,6 +16,7 @@ import za.co.etaxi.app.domain.model.VehicleClass
 import za.co.etaxi.app.domain.model.VehicleStatus
 import za.co.etaxi.app.domain.model.WalletTransaction
 import za.co.etaxi.app.domain.repository.DriverEarnings
+import za.co.etaxi.app.domain.repository.DriverOnboardingState
 import za.co.etaxi.app.domain.repository.DriverRepository
 
 class MockDriverRepository : DriverRepository {
@@ -32,6 +33,12 @@ class MockDriverRepository : DriverRepository {
     private val _vehicles = MutableStateFlow(MockExtras.driverVehicles)
     private val _documents = MutableStateFlow(MockExtras.driverDocuments)
     private val _transactions = MutableStateFlow(MockExtras.walletTransactions)
+
+    private val _onboardingState = MutableStateFlow(deriveOnboardingState(
+        MockExtras.driverVehicles,
+        MockExtras.driverDocuments,
+    ))
+    override val onboardingState = _onboardingState.asStateFlow()
 
     override suspend fun setOnline(online: Boolean) {
         _isOnline.value = online
@@ -115,6 +122,7 @@ class MockDriverRepository : DriverRepository {
             status = VehicleStatus.PENDING,
         )
         _vehicles.value = _vehicles.value + vehicle
+        recomputeOnboarding()
         return vehicle
     }
 
@@ -122,6 +130,7 @@ class MockDriverRepository : DriverRepository {
         _vehicles.value = _vehicles.value.map {
             it.copy(isActive = it.id == vehicleId)
         }
+        recomputeOnboarding()
     }
 
     override suspend fun documents(): List<DriverDocument> = _documents.value
@@ -136,8 +145,71 @@ class MockDriverRepository : DriverRepository {
         _documents.value = _documents.value.map { if (it.type == type) updated else it }
             .toMutableList()
             .also { if (it.none { d -> d.type == type }) it.add(updated) }
+        recomputeOnboarding()
         return updated
     }
 
     override suspend fun walletTransactions(): List<WalletTransaction> = _transactions.value
+
+    // ===== Onboarding =====
+
+    override suspend fun resetForNewDriver() {
+        _vehicles.value = emptyList()
+        _documents.value = DocumentType.entries.map { type ->
+            DriverDocument(type = type, status = DocumentStatus.MISSING)
+        }
+        _onboardingState.value = DriverOnboardingState.NOT_STARTED
+    }
+
+    override suspend fun submitOnboarding() {
+        // In real backend: POST /drivers/submit → status becomes AWAITING_REVIEW.
+        // Mock: if everything is present, flip to AWAITING_REVIEW; otherwise stay IN_PROGRESS.
+        val vehiclesOk = _vehicles.value.isNotEmpty()
+        val requiredDocsUploaded = DocumentType.entries.filter { it.required }
+            .all { type ->
+                _documents.value.any { it.type == type && it.status != DocumentStatus.MISSING }
+            }
+        if (vehiclesOk && requiredDocsUploaded) {
+            _onboardingState.value = DriverOnboardingState.AWAITING_REVIEW
+        }
+    }
+
+    private fun recomputeOnboarding() {
+        _onboardingState.value = deriveOnboardingState(_vehicles.value, _documents.value)
+    }
+}
+
+/**
+ * Derives the driver's onboarding state from current vehicle and document lists.
+ *
+ * NOT_STARTED     → no vehicles at all
+ * IN_PROGRESS     → has vehicles but missing any required doc upload
+ * AWAITING_REVIEW → set by `submitOnboarding()` only
+ * APPROVED        → one vehicle APPROVED + all required docs APPROVED
+ * REJECTED        → any required doc or the active vehicle REJECTED
+ */
+private fun deriveOnboardingState(
+    vehicles: List<DriverVehicle>,
+    documents: List<DriverDocument>,
+): DriverOnboardingState {
+    if (vehicles.isEmpty()) return DriverOnboardingState.NOT_STARTED
+
+    val requiredDocs = DocumentType.entries.filter { it.required }
+    val statusByType = documents.associateBy { it.type }
+
+    val anyRejected = requiredDocs.any {
+        statusByType[it]?.status == DocumentStatus.REJECTED
+    } || vehicles.any { it.status == VehicleStatus.REJECTED }
+    if (anyRejected) return DriverOnboardingState.REJECTED
+
+    val allApproved = vehicles.any { it.status == VehicleStatus.APPROVED } &&
+        requiredDocs.all { statusByType[it]?.status == DocumentStatus.APPROVED }
+    if (allApproved) return DriverOnboardingState.APPROVED
+
+    val missingAny = requiredDocs.any {
+        val s = statusByType[it]?.status
+        s == null || s == DocumentStatus.MISSING
+    }
+    return if (missingAny) DriverOnboardingState.IN_PROGRESS
+    else DriverOnboardingState.AWAITING_REVIEW
 }

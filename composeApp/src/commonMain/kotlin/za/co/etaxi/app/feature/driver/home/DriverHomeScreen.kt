@@ -2,7 +2,6 @@ package za.co.etaxi.app.feature.driver.home
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -36,10 +35,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import za.co.etaxi.app.core.components.MockMapCanvas
+import za.co.etaxi.app.core.map.EtaxiMap
+import za.co.etaxi.app.core.map.MapState
+import za.co.etaxi.app.core.map.defaultJoburgCamera
 import za.co.etaxi.app.core.theme.EtaxiColors
 import za.co.etaxi.app.core.util.formatRand
 import za.co.etaxi.app.data.mock.MockData
 import za.co.etaxi.app.domain.model.DriverIncomingRequest
+import za.co.etaxi.app.domain.repository.DriverOnboardingState
 import za.co.etaxi.app.domain.repository.DriverRepository
 import za.co.etaxi.app.feature.driver.activeTrip.DriverActiveTripScreen
 
@@ -52,6 +55,10 @@ object DriverHomeScreen : Screen {
         val online by repo.isOnline.collectAsState(initial = false)
         val incoming by repo.incomingRequests().collectAsState(initial = null)
         val active by repo.activeTrip().collectAsState(initial = null)
+        val onboarding by repo.onboardingState.collectAsState(
+            initial = DriverOnboardingState.APPROVED,
+        )
+        val canGoOnline = onboarding == DriverOnboardingState.APPROVED
 
         // Push to active trip screen once accepted
         LaunchedEffect(active?.id) {
@@ -59,7 +66,10 @@ object DriverHomeScreen : Screen {
         }
 
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            MockMapCanvas(modifier = Modifier.fillMaxSize())
+            EtaxiMap(
+                state = MapState(camera = defaultJoburgCamera()),
+                modifier = Modifier.fillMaxSize(),
+            )
 
             // Top info card
             Column(
@@ -107,10 +117,14 @@ object DriverHomeScreen : Screen {
                     .padding(bottom = 32.dp, start = 24.dp, end = 24.dp)
                     .fillMaxWidth(),
             ) {
-                OnlineToggleButton(
-                    online = online,
-                    onToggle = { scope.launch { repo.setOnline(!online) } },
-                )
+                if (canGoOnline) {
+                    OnlineToggleButton(
+                        online = online,
+                        onToggle = { scope.launch { repo.setOnline(!online) } },
+                    )
+                } else {
+                    OnboardingGateChip(state = onboarding)
+                }
             }
 
             // Incoming request modal
@@ -181,6 +195,62 @@ private fun OnlineToggleButton(online: Boolean, onToggle: () -> Unit) {
             if (online) "Go offline" else "Go online",
             style = MaterialTheme.typography.titleLarge,
             color = EtaxiColors.InkOnPower,
+        )
+    }
+}
+
+/**
+ * Shown instead of the online toggle while the driver is still being
+ * reviewed or hasn't finished their onboarding. Non-clickable, just
+ * informational — onboarding itself is reached via the redirect in
+ * HomeScreen when a fresh driver verifies OTP, or via the setup tab
+ * (future work) for returning drivers.
+ */
+@Composable
+private fun OnboardingGateChip(state: DriverOnboardingState) {
+    val (title, subtitle, tint) = when (state) {
+        DriverOnboardingState.NOT_STARTED     -> Triple(
+            "Finish your onboarding",
+            "Register your vehicle and documents to start earning",
+            EtaxiColors.Power,
+        )
+        DriverOnboardingState.IN_PROGRESS     -> Triple(
+            "Onboarding in progress",
+            "Finish uploading your required documents",
+            EtaxiColors.Power,
+        )
+        DriverOnboardingState.AWAITING_REVIEW -> Triple(
+            "Under review",
+            "We'll notify you within 24-48 hours",
+            EtaxiColors.Warning,
+        )
+        DriverOnboardingState.REJECTED        -> Triple(
+            "Action required",
+            "One or more documents need attention",
+            EtaxiColors.Danger,
+        )
+        DriverOnboardingState.APPROVED        -> Triple(
+            "Approved",
+            "You're good to go",
+            EtaxiColors.Success,
+        )
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, tint.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+            .padding(18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = tint)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = EtaxiColors.InkMuted,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
 }

@@ -6,68 +6,59 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
 private val EtaxiDarkColors = darkColorScheme(
-    primary            = EtaxiColors.Power,
-    onPrimary          = EtaxiColors.InkOnPower,
-    primaryContainer   = EtaxiColors.PowerMuted,
-    onPrimaryContainer = EtaxiColors.Power,
+    primary              = EtaxiColors.Power,
+    onPrimary            = EtaxiColors.PowerInk,
+    primaryContainer     = EtaxiColors.PowerDim,
+    onPrimaryContainer   = EtaxiColors.Power,
 
-    secondary          = EtaxiColors.Power,
-    onSecondary        = EtaxiColors.InkOnPower,
-    secondaryContainer = EtaxiColors.SlidesRaised,
-    onSecondaryContainer = EtaxiColors.Ink,
+    secondary            = EtaxiColors.Hire,
+    onSecondary          = EtaxiColors.Bone,
+    secondaryContainer   = EtaxiColors.Ink600,
+    onSecondaryContainer = EtaxiColors.Bone,
 
-    tertiary           = EtaxiColors.Power,
-    onTertiary         = EtaxiColors.InkOnPower,
-    tertiaryContainer  = EtaxiColors.SlidesRaised,
-    onTertiaryContainer = EtaxiColors.InkMuted,
+    tertiary             = EtaxiColors.Amber,
+    onTertiary           = EtaxiColors.Ink900,
+    tertiaryContainer    = EtaxiColors.Ink600,
+    onTertiaryContainer  = EtaxiColors.BoneMuted,
 
-    background         = EtaxiColors.SlidesDeep,
-    onBackground       = EtaxiColors.Ink,
+    background           = EtaxiColors.Ink900,
+    onBackground         = EtaxiColors.Bone,
 
-    surface            = EtaxiColors.Slides,
-    onSurface          = EtaxiColors.Ink,
-    surfaceVariant     = EtaxiColors.SlidesRaised,
-    onSurfaceVariant   = EtaxiColors.InkMuted,
+    surface              = EtaxiColors.Ink700,
+    onSurface            = EtaxiColors.Bone,
+    surfaceVariant       = EtaxiColors.Ink600,
+    onSurfaceVariant     = EtaxiColors.BoneMuted,
 
-    surfaceTint        = EtaxiColors.Power,
-    inverseSurface     = EtaxiColors.Ink,
-    inverseOnSurface   = EtaxiColors.SlidesDeep,
-    inversePrimary     = EtaxiColors.PowerMuted,
+    surfaceTint          = EtaxiColors.Power,
+    inverseSurface       = EtaxiColors.Bone,
+    inverseOnSurface     = EtaxiColors.Ink900,
+    inversePrimary       = EtaxiColors.PowerDim,
 
-    outline            = EtaxiColors.SlidesEdge,
-    outlineVariant     = EtaxiColors.SlidesSoft,
+    outline              = EtaxiColors.Ink500,
+    outlineVariant       = EtaxiColors.Ink400,
 
-    error              = EtaxiColors.Danger,
-    onError            = EtaxiColors.Ink,
-    errorContainer     = EtaxiColors.DangerDim,
-    onErrorContainer   = EtaxiColors.Danger,
+    error                = EtaxiColors.Flare,
+    onError              = EtaxiColors.Bone,
+    errorContainer       = EtaxiColors.DangerDim,
+    onErrorContainer     = EtaxiColors.Flare,
 
-    scrim              = androidx.compose.ui.graphics.Color.Black,
+    scrim                = androidx.compose.ui.graphics.Color.Black,
 )
 
 private val EtaxiLightColors = lightColorScheme(
     primary            = EtaxiColors.Power,
-    onPrimary          = EtaxiColors.InkOnPower,
-    primaryContainer   = EtaxiColors.Power,
-    onPrimaryContainer = EtaxiColors.InkOnPower,
-
+    onPrimary          = EtaxiColors.PowerInk,
     background         = EtaxiColors.LightBg,
     onBackground       = EtaxiColors.LightInk,
     surface            = EtaxiColors.LightSurface,
     onSurface          = EtaxiColors.LightInk,
     surfaceVariant     = EtaxiColors.LightBg,
     onSurfaceVariant   = EtaxiColors.LightInkMuted,
-
     outline            = EtaxiColors.LightEdge,
     outlineVariant     = EtaxiColors.LightEdge,
-
-    error              = EtaxiColors.Danger,
+    error              = EtaxiColors.Flare,
 )
 
-/**
- * Root theme. Defaults to dark mode (matches the brand reference).
- * `useDarkTheme = false` switches to a minimal light scheme if needed.
- */
 @Composable
 fun EtaxiTheme(
     useDarkTheme: Boolean = true,

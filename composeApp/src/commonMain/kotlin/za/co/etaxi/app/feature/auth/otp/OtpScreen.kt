@@ -32,11 +32,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import za.co.etaxi.app.core.components.EtaxiPrimaryButton
+import za.co.etaxi.app.core.navigation.HomeScreen
 import za.co.etaxi.app.core.theme.EtaxiColors
 import za.co.etaxi.app.domain.model.UserRole
+import za.co.etaxi.app.domain.repository.DriverRepository
 import za.co.etaxi.app.domain.repository.SessionRepository
-import za.co.etaxi.app.feature.driver.home.DriverHomeScreen
-import za.co.etaxi.app.feature.rider.home.RiderHomeScreen
 
 data class OtpScreen(val phone: String) : Screen {
     @OptIn(ExperimentalMaterial3Api::class)
@@ -44,6 +44,7 @@ data class OtpScreen(val phone: String) : Screen {
     override fun Content() {
         val navigator = LocalNavigator.currentOrThrow
         val session: SessionRepository = koinInject()
+        val driverRepo: DriverRepository = koinInject()
         val scope = remember { CoroutineScope(Dispatchers.Default) }
 
         var code by remember { mutableStateOf("") }
@@ -117,9 +118,13 @@ data class OtpScreen(val phone: String) : Screen {
                         scope.launch {
                             session.verifyOtp(code)
                             val role = session.selectedRole.first() ?: UserRole.RIDER
+                            // Brand-new driver: wipe mock fixtures so they start with
+                            // zero vehicles and missing docs, triggering onboarding.
+                            if (role == UserRole.DRIVER) {
+                                driverRepo.resetForNewDriver()
+                            }
                             loading = false
-                            if (role == UserRole.DRIVER) navigator.replaceAll(DriverHomeScreen)
-                            else navigator.replaceAll(RiderHomeScreen)
+                            navigator.replaceAll(HomeScreen)
                         }
                     },
                 )

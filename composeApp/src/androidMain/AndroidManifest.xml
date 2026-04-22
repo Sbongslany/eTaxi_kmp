@@ -18,6 +18,11 @@
         android:theme="@style/Theme.Etaxi"
         tools:targetApi="35">
 
+        <!-- Google Maps API key — injected from local.properties by the secrets-gradle-plugin -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyDEWmXBAIya3FzadyIPCQQnd7kz1O1_qqc" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
