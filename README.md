@@ -1,167 +1,116 @@
-# eTaxi — KMP app (rider + driver)
+# eTaxi KMP — Patch G: Wire real backend + unified register form
 
-A role-based **Kotlin Multiplatform** taxi-hailing app for South Africa. One codebase, two roles (rider and driver), targeting **Android + iOS** with a shared Compose UI.
+## What this patch does
 
-> **Stack:** Kotlin 2.1 · Compose Multiplatform 1.7 · Voyager nav · Koin DI · Material 3 · Coroutines · Clean architecture
+1. **Fixes Koin wiring** — `initKoin()` now loads `networkModule` + `repositoryModule`. When `USE_REMOTE_API = true`, SessionRepository and DriverRepository resolve to the real backend (http://192.168.0.181:5001/api/v1). That's why no requests were hitting your backend — mocks were still bound.
 
----
+2. **Adds EtaxiApp.kt** — Android Application class. Registers the Context (needed for TokenManager's encrypted storage) and calls `initKoin`. This file likely doesn't exist in your project yet.
 
-## Screens
+3. **Unified RegisterScreen** — Rider/Driver toggle at the top of the form. No more separate role-chooser screen. Normalizes phone to +27 format before submit, calls `session.register(...)` → backend → navigates to OTP screen on success.
 
-Ten screens, all hardcoded to mock data so the UI runs end-to-end before the backend is integrated.
+## Files in this patch (3)
 
-**Shared:** Splash · Role Selection · Login · Register · OTP · Profile · Notifications
-**Rider:** Home (map + bottom sheet) · Trip in progress (status banner + driver card) · Trip history
-**Driver:** Home (online toggle + incoming request modal) · Active trip (state machine) · Earnings · Trips
+- `composeApp/src/commonMain/kotlin/za/co/etaxi/app/core/di/AppModule.kt`  (replaces existing)
+- `composeApp/src/commonMain/kotlin/za/co/etaxi/app/feature/auth/register/RegisterScreen.kt`  (replaces existing)
+- `composeApp/src/androidMain/kotlin/za/co/etaxi/app/EtaxiApp.kt`  (NEW file)
 
----
-
-## Architecture
-
-```
-composeApp/
-├── src/commonMain/kotlin/za/co/etaxi/app/
-│   ├── App.kt                              # root composable
-│   ├── core/
-│   │   ├── theme/                          # Color · Typography · Shape · Theme
-│   │   ├── components/                     # Buttons · TextFields · Loaders · MockMapCanvas
-│   │   ├── navigation/                     # HomeScreen router (routes by role)
-│   │   ├── di/                             # Koin AppModule
-│   │   └── util/                           # Format (ZAR)
-│   ├── domain/
-│   │   ├── model/                          # User · Trip · Place · Notification
-│   │   └── repository/                     # Repository interfaces
-│   ├── data/mock/                          # Mock repositories + Joburg sample data
-│   └── feature/
-│       ├── splash/
-│       ├── auth/ (roleSelection, login, register, otp)
-│       ├── rider/ (home, tripInProgress, history)
-│       ├── driver/ (home, activeTrip, earnings, history)
-│       ├── profile/
-│       └── notifications/
-├── src/androidMain/kotlin/za/co/etaxi/app/
-│   ├── EtaxiApp.kt                         # Application class, Koin init
-│   └── MainActivity.kt
-└── src/iosMain/kotlin/za/co/etaxi/app/
-    └── MainViewController.kt               # Swift entrypoint
-```
-
-**Clean architecture** enforces the swap: the `domain/repository` interfaces are hit from screens; `data/mock` is the only implementation today. When the backend is ready, we add a new `data/remote` module with Ktor and register it in Koin — zero screen changes.
-
----
-
-## Theme
-
-The palette is lifted from the reference slide (`POWER #C3D809` + `SLIDES #222022`) and calibrated into an 18-tone ramp:
-
-- **Primary lime** (`Power`) for CTAs, accents, the online/active states
-- **Near-black** (`Slides`, `SlidesDeep`, `SlidesRaised`, `SlidesEdge`, `SlidesSoft`) for background/surface/elevated layers
-- **Ink** scale (Ink / InkMuted / InkFaint / InkOnPower) for text that always meets contrast
-- Semantic: `Success` (green), `Warning` (amber), `Danger` (red) + container dims
-
-Typography is display-heavy (Black/ExtraBold on large sizes) so headings feel like signage — matches the brand attitude.
-
-Animations: spring-based button press, `AnimatedContent` fade-through on tab switches, infinite-transition pulses on the "searching" state and driver online indicator, slide-up sheets for incoming requests.
-
----
-
-## Getting started
-
-### Prerequisites
-
-- **macOS** (Xcode is needed for iOS)
-- **JDK 17+**
-- **Android Studio** Koala or newer with the Kotlin Multiplatform plugin
-- **Xcode 15+**
-- **gradle** CLI for the bootstrap (`brew install gradle`)
-
-### First-time setup
+## Apply
 
 ```bash
-./bootstrap.sh
+cd "/Users/xolanindebele/Documents/Production Ready/etaxi/etaxi-kmp"
+unzip -o ~/Downloads/etaxi-kmp-patch-G.zip
 ```
 
-This generates the Gradle wrapper (`./gradlew`). From here:
+## REQUIRED manual step — AndroidManifest.xml
 
-### Android
+Open `composeApp/src/androidMain/AndroidManifest.xml` and make sure the
+`<application>` tag references our new class AND has INTERNET permission
+AND has the network security config.
+
+Near the top of `<manifest>`, inside but NOT inside `<application>`:
+
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+```
+
+On the `<application>` tag, add these attributes:
+
+```xml
+<application
+    android:name=".EtaxiApp"
+    android:usesCleartextTraffic="true"
+    android:networkSecurityConfig="@xml/network_security_config"
+    ...>
+```
+
+If you already applied the F2 patch's manifest instructions, only the
+`android:name=".EtaxiApp"` attribute is new.
+
+**If you'd rather I send you a complete replacement AndroidManifest, paste me your current one and I'll ship it next turn. Without `android:name=".EtaxiApp"` the app WILL NOT call initKoin at all** and nothing will hit the backend.
+
+## REQUIRED manual step — remove RoleSelectionScreen from nav
+
+I don't know where in your navigation graph RoleSelectionScreen is
+referenced. Most likely in your LoginScreen or a SplashScreen. Look for:
+
+```kotlin
+navigator.push(RoleSelectionScreen)
+// or
+navigator.replaceAll(RoleSelectionScreen)
+```
+
+Replace those references with `RegisterScreen` directly. The new
+RegisterScreen has the role toggle built in.
+
+You can also delete these two screen files entirely if nothing else
+references them:
+```bash
+rm composeApp/src/commonMain/kotlin/za/co/etaxi/app/feature/auth/roleSelection/RoleSelectionScreen.kt
+rm composeApp/src/commonMain/kotlin/za/co/etaxi/app/feature/onboarding/ServiceChooserScreen.kt
+```
+
+If you prefer to keep them for now (they may be wired elsewhere),
+just change the `navigator.push(RoleSelectionScreen)` calls to
+`navigator.push(RegisterScreen)` and leave the files alone.
+
+## Build + run
 
 ```bash
-./gradlew :composeApp:installDebug
+./gradlew :composeApp:assembleDebug
 ```
 
-…or open the folder in Android Studio and press ▶.
+## Test end-to-end
 
-### iOS
-
-Xcode project isn't included in the zip (too machine-specific). Follow `docs/IOS_SETUP.md` — two options, one takes ~5 minutes.
-
-Once generated:
-
-```bash
-open iosApp/iosApp.xcodeproj
-# then ▶ in Xcode against an iOS simulator
-```
-
----
-
-## Development flows (mock mode)
-
-All flows work end-to-end without a backend.
-
-### Rider flow
-
-1. Splash → Role selection → pick "Rider"
-2. Login or Register (any input ≥ 4 chars works)
-3. OTP (any 4-6 digit numeric code)
-4. **Home** — tap a saved place → estimate appears → pick vehicle class → request trip
-5. **Trip in progress** — searching state pulses, then "Simulate driver accepted" advances through the state machine (ACCEPTED → ARRIVING → ARRIVED → IN_PROGRESS → COMPLETED)
-
-### Driver flow
-
-1. Splash → Role selection → "Driver"
-2. Login / Register / OTP (same as rider)
-3. **Drive** tab — big "Go online" button → 2.5s later a mock request slides up
-4. Accept → pushed to **Active trip** screen → advance through states with the big primary CTA
-5. **Earnings** tab shows today/week/month cards + wallet balance
-
----
-
-## Integrating the backend
-
-Mock repos in `data/mock/` implement the same interfaces as the real repos will. To plug in the existing `etaxi-backend`:
-
-1. Add `data/remote/` with Ktor client, auth interceptor (reads JWT from a `TokenStorage`)
-2. Implement each interface: `RemoteSessionRepository`, `RemoteRiderRepository`, etc.
-3. Swap one line in `core/di/AppModule.kt`:
-   ```kotlin
-   single<SessionRepository> { RemoteSessionRepository(get()) }  // was MockSessionRepository()
+1. Start backend on Mac:
+   ```bash
+   cd /Users/xolanindebele/Documents/Production\ Ready/etaxi/etaxi-backend
+   npm run dev
    ```
 
-The screens never reference the mock classes directly — only the interfaces — so no UI changes needed.
+2. Run app on your Android device (same Wi-Fi as Mac).
 
----
+3. On Register screen: pick **Rider**, fill in test details, tap Continue.
 
-## What's NOT built yet
+4. **Watch the Mac terminal.** You should see:
+   ```
+   POST /api/v1/auth/register 201
+   [OTP] +27821112222 -> 834217
+   ```
 
-- Real map (Google Maps / MapKit) — `MockMapCanvas` draws a stylized placeholder. Swap later via `expect/actual`.
-- Persistent storage (DataStore) — role + token are in-memory only.
-- Networking layer (Ktor).
-- Localization (en-ZA is the only string bundle).
-- Unit tests.
+5. Enter that 6-digit code on OTP screen. App should log you in.
 
----
+If no backend log appears after tapping Continue:
+- Check that `android:name=".EtaxiApp"` is in AndroidManifest
+- Check `USE_REMOTE_API = true` in AppModule.kt
+- Check that device and Mac are on the same Wi-Fi
+- Open logcat and filter by "EtaxiApi" — you'll see the HTTP attempts
 
-## Conventions
+## Known limits in this patch
 
-- `expect/actual` kept to the minimum (only needed once we add platform storage + maps).
-- Every screen is a Voyager `Screen` — navigation is type-safe and supports deep transitions.
-- Repositories expose `Flow<T>` for reactive state, `suspend fun` for commands.
-- Colors only reference `EtaxiColors.*` — don't hardcode hex in screens.
-- Currencies are cents (Int) in the domain; `formatZar(cents)` renders `R1 234.50`.
-
----
-
-## License
-
-Internal project. Lime and black forever.
-# eTaxi_kmp
+- Role-based routing AFTER login/OTP (rider home vs driver home) isn't
+  changed here. Depending on what your current `HomeScreen` does, it
+  may or may not already route by role. If not, that's a tiny
+  follow-up patch once we confirm auth works end-to-end.
+- Session restore on app launch — existing behavior preserved. Next
+  patch adds `restoreSession()` call on splash.

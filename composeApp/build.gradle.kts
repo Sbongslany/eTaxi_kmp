@@ -7,6 +7,7 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.secretsGradlePlugin)
+    alias(libs.plugins.kotlinSerialization)
 }
 
 kotlin {
@@ -40,6 +41,10 @@ kotlin {
             implementation(libs.play.services.maps)
             implementation(libs.play.services.location)
             implementation(libs.maps.compose)
+
+            // Networking (Android engine) + encrypted token storage
+            implementation(libs.ktor.client.okhttp)
+            implementation(libs.androidx.security.crypto)
         }
 
         commonMain.dependencies {
@@ -63,6 +68,18 @@ kotlin {
             implementation(libs.koin.core)
             implementation(libs.koin.compose)
             implementation(libs.koin.compose.viewmodel)
+
+            // Networking (common)
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.client.logging)
+            implementation(libs.ktor.serialization.kotlinx.json)
+            implementation(libs.kotlinx.serialization.json)
+        }
+
+        iosMain.dependencies {
+            // Networking (iOS/Darwin engine)
+            implementation(libs.ktor.client.darwin)
         }
     }
 }
