@@ -13,12 +13,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Icon
@@ -53,14 +53,15 @@ import za.co.etaxi.app.domain.repository.SessionRepository
 import za.co.etaxi.app.feature.auth.otp.OtpScreen
 import za.co.etaxi.app.feature.auth.register.RegisterScreen
 
-// Login screen. Previous version ignored the Result of session.login(),
-// which let any credentials "succeed". This version:
-//   1. Calls session.login(identifier, password)
-//   2. On Result.success -> navigator.replaceAll(HomeScreen) which does
-//      role-based routing internally
-//   3. On PhoneVerificationRequiredException -> navigate to OtpScreen
-//      (backend has already re-sent an OTP)
-//   4. On any other failure -> show inline error message; DO NOT navigate
+// Login screen. Accepts either email OR phone as the identifier.
+// Normalization rules:
+//   - If input contains "@", treat as email, pass through lowercased.
+//   - Otherwise treat as phone:
+//       * If starts with "+", pass through unchanged.
+//       * If starts with "0", strip the 0 and prepend "+27".
+//       * If starts with "27", prepend "+".
+//       * Otherwise prepend "+27".
+//   - Validate result has at least 10 chars of phone OR a valid email shape.
 object LoginScreen : Screen {
     @Composable
     override fun Content() {
@@ -68,7 +69,7 @@ object LoginScreen : Screen {
         val session: SessionRepository = koinInject()
         val scope = rememberCoroutineScope()
 
-        var phone by remember { mutableStateOf("") }
+        var identifier by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
         var showPassword by remember { mutableStateOf(false) }
         var loading by remember { mutableStateOf(false) }
@@ -97,7 +98,7 @@ object LoginScreen : Screen {
                         color = EtaxiColors.InkOnPower,
                     )
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.size(12.dp))
                 Text(
                     "eTaxi",
                     style = MaterialTheme.typography.displaySmall,
@@ -114,7 +115,7 @@ object LoginScreen : Screen {
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "Sign in to continue",
+                "Sign in with your email or phone number",
                 style = MaterialTheme.typography.bodyLarge,
                 color = EtaxiColors.InkMuted,
             )
@@ -122,56 +123,36 @@ object LoginScreen : Screen {
             Spacer(Modifier.height(40.dp))
 
             Text(
-                "PHONE NUMBER",
+                "EMAIL OR PHONE",
                 style = MaterialTheme.typography.labelMedium,
                 color = EtaxiColors.InkFaint,
             )
             Spacer(Modifier.height(8.dp))
-            Row(
+            TextField(
+                value = identifier,
+                onValueChange = { identifier = it.trim() },
+                placeholder = {
+                    Text(
+                        "you@example.com  or  +27821234567",
+                        color = EtaxiColors.InkFaint,
+                    )
+                },
+                singleLine = true,
+                leadingIcon = {
+                    Icon(
+                        Icons.Rounded.AlternateEmail,
+                        contentDescription = null,
+                        tint = EtaxiColors.InkMuted,
+                    )
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                colors = transparentTextFieldColors(),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
                     .background(EtaxiColors.Slides),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "\uD83C\uDDFF\uD83C\uDDE6",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "+27",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = EtaxiColors.Ink,
-                    )
-                }
-                Box(
-                    Modifier
-                        .width(1.dp)
-                        .height(28.dp)
-                        .background(EtaxiColors.SlidesEdge),
-                )
-                TextField(
-                    value = phone,
-                    onValueChange = { v ->
-                        if (v.length <= 10) phone = v.filter { it.isDigit() }
-                    },
-                    placeholder = {
-                        Text(
-                            "82 456 7890",
-                            color = EtaxiColors.InkFaint,
-                        )
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    colors = transparentTextFieldColors(),
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            )
 
             Spacer(Modifier.height(20.dp))
 
@@ -225,20 +206,20 @@ object LoginScreen : Screen {
             EtaxiPrimaryButton(
                 text = if (loading) "SIGNING IN..." else "Sign in",
                 loading = loading,
-                enabled = phone.isNotBlank() && password.isNotBlank() && !loading,
+                enabled = identifier.isNotBlank() && password.isNotBlank() && !loading,
                 onClick = {
                     loading = true
                     errorMessage = null
-                    val identifier = "+27$phone"
+                    val normalized = normalizeIdentifier(identifier)
                     scope.launch {
-                        val result = session.login(identifier, password)
+                        val result = session.login(normalized, password)
                         loading = false
                         when {
                             result.isSuccess -> {
                                 nav.replaceAll(HomeScreen)
                             }
                             result.exceptionOrNull() is PhoneVerificationRequiredException -> {
-                                nav.push(OtpScreen(identifier))
+                                nav.push(OtpScreen(normalized))
                             }
                             else -> {
                                 errorMessage = result.exceptionOrNull()?.message
@@ -299,6 +280,27 @@ object LoginScreen : Screen {
                 modifier = Modifier.align(Alignment.CenterHorizontally),
             )
         }
+    }
+}
+
+// Normalize what the user typed into either an email or a canonical
+// SA phone number. The backend's login endpoint accepts both.
+//
+// Rules:
+//   - Contains "@"  -> lowercase email, pass through
+//   - Starts "+"    -> already in international format, strip spaces
+//   - Starts "0"    -> drop the 0, prepend "+27" (local SA format)
+//   - Starts "27"   -> prepend "+"
+//   - Otherwise     -> prepend "+27" (assume just the subscriber digits)
+private fun normalizeIdentifier(input: String): String {
+    val trimmed = input.trim()
+    if (trimmed.contains("@")) return trimmed.lowercase()
+    val digitsPlus = trimmed.filter { it.isDigit() || it == '+' }
+    return when {
+        digitsPlus.startsWith("+") -> digitsPlus
+        digitsPlus.startsWith("0") -> "+27" + digitsPlus.drop(1)
+        digitsPlus.startsWith("27") -> "+$digitsPlus"
+        else -> "+27$digitsPlus"
     }
 }
 

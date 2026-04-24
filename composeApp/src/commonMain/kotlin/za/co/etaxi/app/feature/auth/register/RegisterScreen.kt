@@ -56,10 +56,14 @@ import za.co.etaxi.app.domain.repository.SessionRepository
 import za.co.etaxi.app.feature.auth.otp.OtpScreen
 
 // Unified register form for both riders and drivers.
-// A segmented toggle at the top picks the role; the rest of the form
-// is identical. After submit, we call session.register(...) which hits
-// POST /auth/register on the backend. Response is
-// { requiresOtp, phone } — we navigate to OtpScreen passing phone.
+//
+// Fix vs previous version:
+// - Phone must be exactly 9 digits of the subscriber number (no
+//   leading 0, no country code). The "+27" is added automatically.
+// - If the user types a leading "0" or "+27", we strip that so we
+//   always end up with +27 + 9 digits = 12 characters total.
+// - The final value sent to the backend is validated to have exactly
+//   12 characters before submit is enabled.
 object RegisterScreen : Screen {
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -73,10 +77,21 @@ object RegisterScreen : Screen {
         var firstName by remember { mutableStateOf("") }
         var lastName by remember { mutableStateOf("") }
         var email by remember { mutableStateOf("") }
-        var phone by remember { mutableStateOf("") }
+        var phoneDigits by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
         var loading by remember { mutableStateOf(false) }
         var errorMessage by remember { mutableStateOf<String?>(null) }
+
+        // Validation. SA subscriber numbers are 9 digits after +27.
+        val phoneValid = phoneDigits.length == 9
+        val emailValid = email.contains("@") && email.contains(".")
+        val passwordValid = password.length >= 8
+        val canSubmit = firstName.isNotBlank() &&
+                lastName.isNotBlank() &&
+                emailValid &&
+                phoneValid &&
+                passwordValid &&
+                !loading
 
         Scaffold(
             containerColor = EtaxiColors.SlidesDeep,
@@ -117,7 +132,6 @@ object RegisterScreen : Screen {
                     color = EtaxiColors.InkMuted,
                 )
 
-                // Role toggle
                 Text(
                     "I AM A",
                     style = MaterialTheme.typography.labelMedium,
@@ -128,7 +142,6 @@ object RegisterScreen : Screen {
                         .fillMaxWidth()
                         .clip(CircleShape)
                         .background(EtaxiColors.Slides),
-                    horizontalArrangement = Arrangement.spacedBy(0.dp),
                 ) {
                     RoleSegment(
                         label = "Rider",
@@ -165,22 +178,40 @@ object RegisterScreen : Screen {
                 }
                 EtaxiTextField(
                     value = email,
-                    onValueChange = { email = it },
+                    onValueChange = { email = it.trim() },
                     label = "Email",
                     leading = Icons.Rounded.Email,
                     keyboardType = KeyboardType.Email,
                 )
                 EtaxiTextField(
-                    value = phone,
-                    onValueChange = { phone = it },
-                    label = "Phone (+27...)",
+                    value = phoneDigits,
+                    onValueChange = { raw ->
+                        // Accept only digits. Strip a leading 0. Strip a
+                        // leading "27" if user typed that by habit. Cap
+                        // at 9 digits.
+                        var d = raw.filter { it.isDigit() }
+                        if (d.startsWith("27")) d = d.removePrefix("27")
+                        if (d.startsWith("0")) d = d.removePrefix("0")
+                        if (d.length > 9) d = d.take(9)
+                        phoneDigits = d
+                    },
+                    label = "Phone (+27 prefix added automatically — 9 digits)",
                     leading = Icons.Rounded.Phone,
                     keyboardType = KeyboardType.Phone,
                 )
+                // Inline phone preview so the user sees what will be submitted.
+                if (phoneDigits.isNotEmpty()) {
+                    Text(
+                        "Will submit as: +27$phoneDigits",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (phoneValid) EtaxiColors.Success
+                                else EtaxiColors.InkFaint,
+                    )
+                }
                 EtaxiTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = "Password",
+                    label = "Password (min 8 characters)",
                     leading = Icons.Rounded.Lock,
                     isPassword = true,
                 )
@@ -198,21 +229,15 @@ object RegisterScreen : Screen {
                 EtaxiPrimaryButton(
                     text = if (loading) "CREATING..." else "CONTINUE",
                     loading = loading,
-                    enabled = firstName.isNotBlank()
-                        && lastName.isNotBlank()
-                        && email.contains("@")
-                        && phone.length >= 10
-                        && password.length >= 8
-                        && !loading,
+                    enabled = canSubmit,
                     onClick = {
                         loading = true
                         errorMessage = null
-                        val normalizedPhone =
-                            if (phone.startsWith("+")) phone else "+27${phone.trimStart('0')}"
+                        val fullPhone = "+27$phoneDigits"
                         scope.launch {
                             val result = session.register(
-                                email = email.trim(),
-                                phone = normalizedPhone,
+                                email = email.trim().lowercase(),
+                                phone = fullPhone,
                                 password = password,
                                 firstName = firstName.trim(),
                                 lastName = lastName.trim(),
@@ -220,7 +245,7 @@ object RegisterScreen : Screen {
                             )
                             loading = false
                             if (result.isSuccess) {
-                                navigator.push(OtpScreen(normalizedPhone))
+                                navigator.push(OtpScreen(fullPhone))
                             } else {
                                 errorMessage = result.exceptionOrNull()?.message
                                     ?: "Registration failed"
@@ -255,7 +280,6 @@ private fun RoleSegment(
         horizontalArrangement = Arrangement.Center,
     ) {
         Icon(icon, contentDescription = null, tint = fg)
-        Spacer(Modifier.height(0.dp))
         Box(Modifier.padding(start = 8.dp)) {
             Text(
                 label,
