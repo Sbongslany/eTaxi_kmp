@@ -7,11 +7,25 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,18 +36,24 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import org.koin.compose.koinInject
 import za.co.etaxi.app.core.navigation.HomeScreen
 import za.co.etaxi.app.core.theme.EtaxiColors
+import za.co.etaxi.app.domain.model.DocumentStatus
+import za.co.etaxi.app.domain.model.DocumentType
 import za.co.etaxi.app.domain.repository.DriverOnboardingState
 import za.co.etaxi.app.domain.repository.DriverRepository
 
-/**
- * Four-step driver onboarding wizard.
- *
- * Flow: Welcome → Vehicle → Documents → Submitted.
- *
- * Strict gate: cannot be dismissed or sent to background. Only way out is
- * to complete all steps, which flips onboardingState to AWAITING_REVIEW.
- * HomeScreen then stops redirecting back here.
- */
+// Four-step driver onboarding wizard.
+//
+// Resume-aware: on entry we fetch the driver's current vehicle + documents
+// from the backend. The wizard resumes at the first incomplete step:
+//
+//   No vehicle yet                    -> WELCOME
+//   Vehicle saved, missing required   -> DOCUMENTS
+//   Vehicle + all required submitted  -> SUBMITTED
+//   Backend says VERIFIED already     -> SUBMITTED (HomeScreen will route them to shell)
+//
+// Without resume-on-load, drivers who close the app mid-flow lose their
+// progress visually even though the backend has it. With resume, they
+// pick up exactly where they left off.
 object DriverOnboardingScreen : Screen {
 
     @Composable
@@ -44,9 +64,30 @@ object DriverOnboardingScreen : Screen {
             initial = DriverOnboardingState.NOT_STARTED,
         )
 
-        var step by remember { mutableStateOf(OnboardStep.WELCOME) }
+        var step by remember { mutableStateOf<OnboardStep?>(null) }
 
-        // When state becomes AWAITING_REVIEW, move to the final step automatically.
+        // Compute the right resume step on entry.
+        // We rely on repo.vehicles() and repo.documents() which both hit
+        // GET /drivers/me; the calls are cheap and need to happen exactly
+        // once. After that, normal step transitions are driven by the
+        // child screens via their onComplete/onSubmitted callbacks.
+        LaunchedEffect(Unit) {
+            val vehicleCount = runCatching { repo.vehicles().size }.getOrDefault(0)
+            val docs = runCatching { repo.documents() }.getOrDefault(emptyList())
+            val requiredTypes = DocumentType.entries.filter { it.required }
+            val submittedRequired = docs.count {
+                it.type.required && it.status != DocumentStatus.MISSING
+            }
+
+            step = when {
+                vehicleCount == 0 -> OnboardStep.WELCOME
+                submittedRequired < requiredTypes.size -> OnboardStep.DOCUMENTS
+                else -> OnboardStep.SUBMITTED
+            }
+        }
+
+        // If the backend later flips state to AWAITING_REVIEW or APPROVED
+        // while the user sits in any step, jump them to SUBMITTED.
         LaunchedEffect(onboardState) {
             if (onboardState == DriverOnboardingState.AWAITING_REVIEW ||
                 onboardState == DriverOnboardingState.APPROVED
@@ -60,15 +101,31 @@ object DriverOnboardingScreen : Screen {
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background),
         ) {
+            val current = step
+            if (current == null) {
+                // Loading shimmer — shows briefly while we fetch the resume step
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Loading your progress...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = EtaxiColors.InkMuted,
+                    )
+                }
+                return@Column
+            }
+
             ProgressHeader(
-                step = step,
+                step = current,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 56.dp, start = 24.dp, end = 24.dp, bottom = 16.dp),
             )
 
             AnimatedContent(
-                targetState = step,
+                targetState = current,
                 transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(200)) },
                 label = "onboard-step",
                 modifier = Modifier.weight(1f),
@@ -129,7 +186,6 @@ private fun ProgressHeader(step: OnboardStep, modifier: Modifier = Modifier) {
             )
         }
         Spacer(Modifier.height(8.dp))
-        // Progress bar
         Box(
             modifier = Modifier
                 .fillMaxWidth()
