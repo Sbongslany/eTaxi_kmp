@@ -16,6 +16,7 @@ import za.co.etaxi.app.core.network.UploadDocumentRequest
 import za.co.etaxi.app.core.network.UploadUrlRequest
 import za.co.etaxi.app.core.network.UploadUrlResponse
 import za.co.etaxi.app.core.network.VehicleDto
+import za.co.etaxi.app.core.upload.FileUploader
 import za.co.etaxi.app.domain.model.DocumentStatus
 import za.co.etaxi.app.domain.model.DocumentType
 import za.co.etaxi.app.domain.model.DriverDocument
@@ -44,9 +45,6 @@ class RemoteDriverRepository(
     private val _incoming = MutableStateFlow<DriverIncomingRequest?>(null)
     private val _activeTrip = MutableStateFlow<Trip?>(null)
 
-    // Tracks which vehicle the backend currently considers "active" so the
-    // VehicleDto.toDomain() mapper can set isActive without needing extra
-    // fields in the DTO.
     private var activeVehicleId: String? = null
 
     override fun incomingRequests(): Flow<DriverIncomingRequest?> = _incoming.asStateFlow()
@@ -77,7 +75,8 @@ class RemoteDriverRepository(
         return if (res is ApiResult.Success<*>) {
             val profile = res.value as DriverProfileDto
             activeVehicleId = profile.activeVehicle?.id
-            listOfNotNull(profile.activeVehicle?.toDomain())
+            val source = profile.vehicles.ifEmpty { listOfNotNull(profile.activeVehicle) }
+            source.map { it.toDomain() }
         } else emptyList()
     }
 
@@ -86,8 +85,6 @@ class RemoteDriverRepository(
         plateNumber: String, vehicleClass: VehicleClass,
     ): DriverVehicle {
         val req = AddVehicleRequest(
-            // Backend now accepts the code (STANDARD / XL / LUX) and resolves
-            // it to a real VehicleType UUID server-side, per backend Patch K.
             vehicleTypeId = vehicleClass.name,
             make = make.trim(),
             model = model.trim(),
@@ -111,28 +108,79 @@ class RemoteDriverRepository(
     }
 
     override suspend fun documents(): List<DriverDocument> {
-        // The backend includes documents in /drivers/me but our DriverProfileDto
-        // doesn't currently surface them. Return empty for now; the onboarding
-        // wizard's "documents" step uses local repo state pre-upload.
-        return emptyList()
+        val backendByType: Map<DocumentType, DocumentDto> = run {
+            val res = api.me()
+            if (res !is ApiResult.Success<*>) return@run emptyMap()
+            val profile = res.value as DriverProfileDto
+            profile.documents
+                .mapNotNull { dto ->
+                    val type = runCatching { DocumentType.valueOf(dto.type) }.getOrNull()
+                    if (type != null) type to dto else null
+                }
+                .toMap()
+        }
+        return DocumentType.entries.map { type ->
+            val dto = backendByType[type]
+            if (dto != null) {
+                dto.toDomain(fallbackType = type)
+            } else {
+                DriverDocument(type = type, status = DocumentStatus.MISSING)
+            }
+        }
     }
 
+    // Interface contract: kept as a no-op throw to make accidental
+    // mock-style calls fail loudly. Real upload uses uploadDocumentWithBytes.
     override suspend fun uploadDocument(type: DocumentType): DriverDocument {
+        throw IllegalStateException(
+            "Use uploadDocumentWithBytes(type, bytes) instead — " +
+                "the real backend requires bytes uploaded to a presigned URL."
+        )
+    }
+
+    // Real upload flow:
+    //   1. POST /storage/upload-url -> { uploadUrl, publicUrl }
+    //   2. PUT bytes to uploadUrl (S3 etc.) with the right contentType
+    //   3. POST /drivers/documents { type, url: publicUrl }
+    //   4. refreshOnboarding() so the driver state reflects the new doc
+    //
+    // The DocumentsStep composable calls this directly (it has a
+    // RemoteDriverRepository-typed reference because Koin returns the
+    // concrete type for additional methods like this one).
+    suspend fun uploadDocumentWithBytes(
+        type: DocumentType,
+        bytes: ByteArray,
+        contentType: String = "image/jpeg",
+        filenameSuffix: String = "jpg",
+    ): DriverDocument {
+        // Step 1: presigned URL
         val uploadRes = api.getUploadUrl(
             UploadUrlRequest(
                 folder = "documents",
-                contentType = "image/jpeg",
-                filename = "${type.name.lowercase()}.jpg",
+                contentType = contentType,
+                filename = "${type.name.lowercase()}.${filenameSuffix}",
             )
         )
-        val publicUrl = if (uploadRes is ApiResult.Success<*>) {
-            val u = uploadRes.value as UploadUrlResponse
-            u.publicUrl ?: u.uploadUrl.substringBefore("?")
+        val uploadResponse: UploadUrlResponse = if (uploadRes is ApiResult.Success<*>) {
+            uploadRes.value as UploadUrlResponse
         } else {
             val failure = uploadRes as ApiResult.Failure
             throw Exception("Upload URL failed: ${failure.message}")
         }
 
+        // Step 2: PUT bytes to S3
+        val putOk = FileUploader.uploadBytes(
+            presignedUrl = uploadResponse.uploadUrl,
+            contentType = contentType,
+            bytes = bytes,
+        )
+        if (!putOk) {
+            throw Exception("Uploading file bytes to storage failed")
+        }
+
+        // Step 3: register the document with the backend
+        val publicUrl = uploadResponse.publicUrl
+            ?: uploadResponse.uploadUrl.substringBefore("?")
         val docRes = api.uploadDocument(
             UploadDocumentRequest(type = type.name, url = publicUrl)
         )
@@ -142,7 +190,7 @@ class RemoteDriverRepository(
             return doc
         }
         val failure = docRes as ApiResult.Failure
-        throw Exception("Document upload failed: ${failure.message}")
+        throw Exception("Document register failed: ${failure.message}")
     }
 
     override suspend fun submitOnboarding() {
@@ -183,26 +231,6 @@ class RemoteDriverRepository(
         api.updateLocation(UpdateLocationRequest(lat = location.lat, lng = location.lng))
     }
 
-    // ─────────────────────────────── Mappers ───────────────────────────────
-
-    // VehicleDto -> DriverVehicle
-    //
-    // Notes on tricky fields:
-    //
-    //  - vehicleClass: The backend stores vehicleTypeId as a UUID. The mobile
-    //    enum has STANDARD / XL / LUX. We can't infer the enum from a UUID
-    //    alone (without an extra API call). When the mapper is called from
-    //    addVehicle() we pass the enum the user picked as a hint. Otherwise
-    //    we fall back to STANDARD — visually correct for the most common
-    //    case, and refreshOnboarding() will replace the value once the user
-    //    sees their full profile.
-    //
-    //  - status: VehicleDto.status is a String matching the enum names. If
-    //    parsing fails we default to PENDING since that's the post-create
-    //    state until the admin approves.
-    //
-    //  - isActive: comes from this.activeVehicleId which we cache from the
-    //    last /drivers/me response.
     private fun VehicleDto.toDomain(
         requestedClass: VehicleClass? = null,
     ): DriverVehicle = DriverVehicle(
@@ -220,12 +248,6 @@ class RemoteDriverRepository(
         isActive = activeVehicleId != null && activeVehicleId == id,
     )
 
-    // DocumentDto -> DriverDocument
-    //
-    // Note: domain DriverDocument does NOT carry id or url fields. The
-    // backend keeps both for storage; the UI only cares about type + status
-    // + timestamps. We surface uploadedAt from issuedAt (or fall back to
-    // null) and leave expiresAt / rejectionReason pass-through.
     private fun DocumentDto.toDomain(fallbackType: DocumentType): DriverDocument =
         DriverDocument(
             type = runCatching { DocumentType.valueOf(type) }.getOrDefault(fallbackType),
@@ -236,11 +258,45 @@ class RemoteDriverRepository(
             rejectionReason = rejectionReason,
         )
 
-    private fun computeOnboardingState(profile: DriverProfileDto): DriverOnboardingState =
-        when (profile.status) {
+    // Derives the driver's onboarding state from their profile.
+    //
+    // VERIFIED      -> APPROVED. Backend admin has approved them.
+    // SUSPENDED /
+    // DEACTIVATED  -> REJECTED. Will route them back into the wizard.
+    // PENDING (default) drilling deeper:
+    //   * No active vehicle yet -> NOT_STARTED.
+    //   * Active vehicle but no docs uploaded -> IN_PROGRESS.
+    //   * Active vehicle AND every required document is uploaded
+    //     (any non-MISSING status counts) -> AWAITING_REVIEW. This is
+    //     the state HomeScreen checks to send the driver into the
+    //     DriverShell rather than back into the wizard.
+    private fun computeOnboardingState(profile: DriverProfileDto): DriverOnboardingState {
+        return when (profile.status) {
             "VERIFIED" -> DriverOnboardingState.APPROVED
             "SUSPENDED", "DEACTIVATED" -> DriverOnboardingState.REJECTED
-            else -> if (profile.activeVehicle == null) DriverOnboardingState.NOT_STARTED
-                    else DriverOnboardingState.IN_PROGRESS
+            else -> {
+                val hasVehicle = profile.activeVehicle != null
+                if (!hasVehicle) return DriverOnboardingState.NOT_STARTED
+
+                // All seven required document types must have been
+                // submitted (i.e. exist on the backend, not necessarily
+                // approved). Profile photo is the only optional one.
+                val uploadedRequired: Set<String> = profile.documents
+                    .map { it.type }
+                    .toSet()
+                val requiredTypes: Set<String> = setOf(
+                    "ID_DOCUMENT",
+                    "DRIVERS_LICENSE",
+                    "PRDP",
+                    "VEHICLE_REGISTRATION",
+                    "ROADWORTHY",
+                    "OPERATING_LICENSE",
+                    "INSURANCE",
+                )
+                val allRequiredSubmitted = requiredTypes.all { it in uploadedRequired }
+                if (allRequiredSubmitted) DriverOnboardingState.AWAITING_REVIEW
+                else DriverOnboardingState.IN_PROGRESS
+            }
         }
+    }
 }

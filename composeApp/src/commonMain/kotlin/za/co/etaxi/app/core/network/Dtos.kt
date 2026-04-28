@@ -3,20 +3,18 @@ package za.co.etaxi.app.core.network
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * DTOs mirroring the eTaxi backend JSON contract.
- *
- * These are WIRE FORMAT types only — they exist to serialize/deserialize
- * HTTP payloads. They MUST stay in lockstep with the backend's zod
- * schemas and Prisma types. Do NOT use these in UI code directly; map
- * them to domain models (User, Vehicle, etc.) in the repository layer.
- *
- * All backend responses are wrapped by an envelope: { success, data }
- * for ok() responses or { success: false, error } for errors. We
- * unwrap in EtaxiApi so DTOs reflect the `data` payload only.
- */
+// DTOs mirroring the eTaxi backend JSON contract.
+//
+// These are WIRE FORMAT types only — they exist to serialize/deserialize
+// HTTP payloads. They MUST stay in lockstep with the backend's zod
+// schemas and Prisma types. Do NOT use these in UI code directly; map
+// them to domain models (User, Vehicle, etc.) in the repository layer.
+//
+// All backend responses are wrapped by an envelope: { success, data }
+// for ok() responses or { success: false, error } for errors. We
+// unwrap in EtaxiApi so DTOs reflect the data payload only.
 
-// ─────────────────────────── Backend response envelope ───────────────────
+// Backend response envelope
 
 @Serializable
 data class ApiEnvelope<T>(
@@ -32,7 +30,7 @@ data class ApiErrorBody(
     val details: String? = null,
 )
 
-// ─────────────────────────── Auth ────────────────────────────────────────
+// Auth
 
 @Serializable
 data class RegisterRequest(
@@ -41,14 +39,9 @@ data class RegisterRequest(
     val password: String,
     val firstName: String,
     val lastName: String,
-    val role: String, // "RIDER" | "DRIVER"
+    val role: String,
 )
 
-/**
- * Patch E of the backend changes /auth/register — it no longer returns
- * tokens, but rather { requiresOtp, phone, expiresAt }. We model that as
- * a sealed response the repository unwraps.
- */
 @Serializable
 data class RegisterPendingResponse(
     val requiresOtp: Boolean = true,
@@ -58,7 +51,7 @@ data class RegisterPendingResponse(
 
 @Serializable
 data class LoginRequest(
-    val identifier: String, // email or phone
+    val identifier: String,
     val password: String,
 )
 
@@ -75,7 +68,7 @@ data class LogoutRequest(
 @Serializable
 data class SendOtpRequest(
     val phone: String,
-    val purpose: String = "REGISTRATION", // REGISTRATION | LOGIN | PASSWORD_RESET
+    val purpose: String = "REGISTRATION",
 )
 
 @Serializable
@@ -103,8 +96,8 @@ data class UserDto(
     val phone: String,
     val firstName: String,
     val lastName: String,
-    val role: String,            // "RIDER" | "DRIVER" | "ADMIN" | "SUPER_ADMIN"
-    val status: String? = null,  // "ACTIVE" | "SUSPENDED" | "DELETED"
+    val role: String,
+    val status: String? = null,
     val profilePhoto: String? = null,
     val emailVerified: Boolean? = null,
     val phoneVerified: Boolean? = null,
@@ -125,17 +118,23 @@ data class RiderProfileDto(
 @Serializable
 data class DriverProfileDto(
     val id: String,
-    val status: String,            // PENDING | VERIFIED | SUSPENDED | DEACTIVATED
-    val availability: String,      // OFFLINE | ONLINE | ON_TRIP
+    val status: String,
+    val availability: String,
     val rating: Double? = null,
     val totalTrips: Int? = null,
     val idNumber: String? = null,
     val currentLat: Double? = null,
     val currentLng: Double? = null,
     val activeVehicle: VehicleDto? = null,
+    // Patch M: backend includes the driver's uploaded documents on the
+    // /drivers/me response. RemoteDriverRepository.documents() merges this
+    // list with the canonical DocumentType.entries so the UI shows all
+    // required types regardless of upload state.
+    val documents: List<DocumentDto> = emptyList(),
+    val vehicles: List<VehicleDto> = emptyList(),
 )
 
-// ─────────────────────────── Vehicles ────────────────────────────────────
+// Vehicles
 
 @Serializable
 data class VehicleDto(
@@ -147,7 +146,7 @@ data class VehicleDto(
     val color: String,
     val plateNumber: String,
     val vinNumber: String? = null,
-    val status: String,           // PENDING | APPROVED | REJECTED | DEACTIVATED
+    val status: String,
     val photoUrl: String? = null,
 )
 
@@ -168,7 +167,7 @@ data class SetActiveVehicleRequest(
     val vehicleId: String,
 )
 
-// ─────────────────────────── Documents ───────────────────────────────────
+// Documents
 
 @Serializable
 data class DocumentDto(
@@ -190,7 +189,7 @@ data class UploadDocumentRequest(
     val expiresAt: String? = null,
 )
 
-// ─────────────────────────── Driver actions ──────────────────────────────
+// Driver actions
 
 @Serializable
 data class GoOnlineRequest(
@@ -206,12 +205,12 @@ data class UpdateLocationRequest(
     val speed: Double? = null,
 )
 
-// ─────────────────────────── Storage (presigned upload) ──────────────────
+// Storage presigned upload
 
 @Serializable
 data class UploadUrlRequest(
-    val folder: String, // "documents" | "vehicles" | "avatars"
-    val contentType: String, // "image/jpeg" | "image/png" | "image/webp" | "application/pdf"
+    val folder: String,
+    val contentType: String,
     val filename: String? = null,
 )
 
