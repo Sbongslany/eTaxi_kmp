@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -17,7 +18,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,49 +37,34 @@ import za.co.etaxi.app.domain.model.DriverVehicle
 import za.co.etaxi.app.domain.model.VehicleClass
 import za.co.etaxi.app.domain.repository.DriverRepository
 
-// VehicleStep — pre-fills the form from any existing vehicle on the
-// backend. If the driver registered a vehicle in a previous session,
-// they re-see those values and can continue without retyping.
+// VehicleStep — collects the driver's car details and creates a Vehicle
+// record on the backend.
 //
-// On submit:
-//   - If there's no existing vehicle, addVehicle() creates a new one.
-//   - If a vehicle already exists, we still call onComplete() to advance.
-//     (Editing an existing vehicle's details is a separate flow not
-//      surfaced here; the rare cases where details change should be
-//      handled by deleting and re-adding via admin/UI in a future patch.)
+// initialVehicle: pre-existing vehicle from a prior session. When non-null
+// the form is pre-filled and the Continue button skips the addVehicle call
+// (the record already exists). Lets a driver who killed the app mid-
+// onboarding pick up where they left off.
 @Composable
-internal fun VehicleStep(onComplete: () -> Unit) {
+internal fun VehicleStep(
+    initialVehicle: DriverVehicle? = null,
+    onComplete: () -> Unit,
+) {
     val repo: DriverRepository = koinInject()
     val scope = rememberCoroutineScope()
 
-    var make by remember { mutableStateOf("") }
-    var model by remember { mutableStateOf("") }
-    var year by remember { mutableStateOf("") }
-    var color by remember { mutableStateOf("") }
-    var plate by remember { mutableStateOf("") }
-    var vehicleClass by remember { mutableStateOf(VehicleClass.STANDARD) }
+    var make by remember { mutableStateOf(initialVehicle?.make.orEmpty()) }
+    var model by remember { mutableStateOf(initialVehicle?.model.orEmpty()) }
+    var year by remember { mutableStateOf(initialVehicle?.year?.toString().orEmpty()) }
+    var color by remember { mutableStateOf(initialVehicle?.color.orEmpty()) }
+    var plate by remember { mutableStateOf(initialVehicle?.plateNumber.orEmpty()) }
+    var vehicleClass by remember {
+        mutableStateOf(initialVehicle?.vehicleClass ?: VehicleClass.STANDARD)
+    }
     var saving by remember { mutableStateOf(false) }
-    var existing by remember { mutableStateOf<DriverVehicle?>(null) }
-    var initialized by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // Load any vehicle the driver already added.
-    LaunchedEffect(Unit) {
-        val v = runCatching { repo.vehicles().firstOrNull() }.getOrNull()
-        if (v != null) {
-            existing = v
-            make = v.make
-            model = v.model
-            year = v.year.toString()
-            color = v.color
-            plate = v.plateNumber
-            vehicleClass = v.vehicleClass
-        }
-        initialized = true
-    }
-
     val yearInt = year.toIntOrNull() ?: 0
-    val canSave = initialized && make.isNotBlank() && model.isNotBlank() &&
+    val canSave = make.isNotBlank() && model.isNotBlank() &&
         yearInt in 2005..2027 && color.isNotBlank() &&
         plate.isNotBlank() && !saving
 
@@ -97,10 +82,8 @@ internal fun VehicleStep(onComplete: () -> Unit) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            if (existing != null)
-                "We have these details on file. Tap continue to keep them, or update first."
-            else
-                "Tell us about the car you'll be driving.",
+            if (initialVehicle != null) "We've kept your details. Tap continue to proceed."
+            else "Tell us about the car you'll be driving.",
             style = MaterialTheme.typography.bodyMedium,
             color = EtaxiColors.InkMuted,
         )
@@ -130,9 +113,7 @@ internal fun VehicleStep(onComplete: () -> Unit) {
             Box(Modifier.weight(1f)) {
                 EtaxiTextField(
                     value = year,
-                    onValueChange = {
-                        if (it.length <= 4) year = it.filter { c -> c.isDigit() }
-                    },
+                    onValueChange = { if (it.length <= 4) year = it.filter { c -> c.isDigit() } },
                     label = "Year",
                     placeholder = "2021",
                     keyboardType = KeyboardType.Number,
@@ -179,7 +160,7 @@ internal fun VehicleStep(onComplete: () -> Unit) {
                             if (selected) EtaxiColors.Power else EtaxiColors.SlidesEdge,
                             RoundedCornerShape(14.dp),
                         )
-                        .clickable { vehicleClass = cls }
+                        .clickable(enabled = initialVehicle == null) { vehicleClass = cls }
                         .padding(vertical = 14.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -204,23 +185,24 @@ internal fun VehicleStep(onComplete: () -> Unit) {
         Spacer(Modifier.height(32.dp))
 
         EtaxiPrimaryButton(
-            text = if (existing != null) "Continue to documents" else "Save and continue",
-            enabled = canSave,
+            text = "Continue to documents",
+            enabled = canSave || initialVehicle != null,
             loading = saving,
             onClick = {
+                if (initialVehicle != null) {
+                    onComplete()
+                    return@EtaxiPrimaryButton
+                }
                 scope.launch {
                     saving = true
                     errorMessage = null
                     try {
-                        // Only POST if no vehicle yet. If one exists, just advance.
-                        if (existing == null) {
-                            repo.addVehicle(make, model, yearInt, color, plate, vehicleClass)
-                        }
-                        saving = false
+                        repo.addVehicle(make, model, yearInt, color, plate, vehicleClass)
                         onComplete()
                     } catch (t: Throwable) {
+                        errorMessage = t.message ?: "Could not save vehicle. Try again."
+                    } finally {
                         saving = false
-                        errorMessage = t.message ?: "Couldn't save your vehicle. Try again."
                     }
                 }
             },
