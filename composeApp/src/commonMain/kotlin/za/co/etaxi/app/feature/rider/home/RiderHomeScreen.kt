@@ -236,8 +236,13 @@ object RiderHomeScreen : Screen {
                                                 requesting = true
                                                 requestError = null
                                                 try {
-                                                    val trip = repo.requestTrip(p, d, o)
-                                                    navigator.push(RiderTripInProgressScreen(trip.id))
+                                                    repo.requestTrip(p, d, o)
+                                                    // Don't push manually - the LaunchedEffect
+                                                    // above watches activeTrip and pushes
+                                                    // RiderTripInProgressScreen as soon as
+                                                    // _activeTrip flips non-null. Pushing here
+                                                    // too caused a double-push race that
+                                                    // crashed the new screen on mount.
                                                 } catch (t: Throwable) {
                                                     requestError = t.message
                                                         ?: "Could not request ride. Try again."

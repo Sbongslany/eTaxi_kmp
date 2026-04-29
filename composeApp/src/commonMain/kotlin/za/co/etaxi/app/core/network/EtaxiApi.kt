@@ -38,6 +38,11 @@ object EtaxiApi {
         isLenient = true
         prettyPrint = false
         encodeDefaults = false
+        // If the backend sends null for a field that has a non-null
+        // default, coerce to the default instead of throwing. This
+        // prevents trip-request response parsing from blowing up on
+        // optional fields that the create endpoint omits.
+        coerceInputValues = true
     }
 
     fun create(): HttpClient = HttpClient {

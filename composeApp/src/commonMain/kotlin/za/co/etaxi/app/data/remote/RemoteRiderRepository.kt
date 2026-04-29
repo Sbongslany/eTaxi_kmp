@@ -122,14 +122,22 @@ class RemoteRiderRepository(
                 dropoff = TripPointDto(dropoff.location.lat, dropoff.location.lng, dropoff.address),
             )
         )
-        return if (res is ApiResult.Success<*>) {
+        if (res !is ApiResult.Success<*>) {
+            val failure = res as ApiResult.Failure
+            throw Exception("Trip request failed: ${failure.message}")
+        }
+        // Map the response defensively — any field-level surprise here
+        // becomes a visible error message on the home screen instead of
+        // an uncaught exception that crashes the app.
+        return try {
             val response = res.value as za.co.etaxi.app.core.network.RequestTripResponse
             val trip = response.trip.toDomain(pickup, dropoff)
             _activeTrip.value = trip
             trip
-        } else {
-            val failure = res as ApiResult.Failure
-            throw Exception("Trip request failed: ${failure.message}")
+        } catch (t: Throwable) {
+            println("[RemoteRiderRepository] requestTrip mapping failed: ${t.message}")
+            t.printStackTrace()
+            throw Exception("Trip created on server but parsing failed: ${t.message}")
         }
     }
 
@@ -277,14 +285,26 @@ class RemoteRiderRepository(
         runCatching { TripStatus.valueOf(s) }.getOrDefault(TripStatus.REQUESTED)
 
     // The backend stores vehicleTypeId as a UUID. When we request a trip we
-    // send the readable code (STANDARD/XL/LUX) and the backend resolves it.
-    // When parsing a returned trip we get the UUID back, which we can't
-    // map back to an enum without an extra lookup. Default to STANDARD.
-    private fun vehicleTypeIdToClass(id: String): VehicleClass =
-        runCatching { VehicleClass.valueOf(id.uppercase()) }
+    // send the UUID and it's echoed back. We map it back to an enum here
+    // so the screens can render the readable class name.
+    private fun vehicleTypeIdToClass(id: String): VehicleClass = when (id) {
+        "768bacf6-d177-4af7-9b57-d82fe9d3a0cf" -> VehicleClass.STANDARD
+        "6dcc92b7-b6c6-4467-baf6-80840a0a70e5" -> VehicleClass.XL
+        "386fb1e5-ec8f-4cc8-b451-b1ad703dfc74" -> VehicleClass.LUX
+        else -> runCatching { VehicleClass.valueOf(id.uppercase()) }
             .getOrDefault(VehicleClass.STANDARD)
+    }
 
-    private fun vehicleClassToTypeCode(cls: VehicleClass): String = cls.name
+    private fun vehicleClassToTypeCode(cls: VehicleClass): String = when (cls) {
+        // Backend's VehicleType table is seeded with these stable UUIDs
+        // (one row per class). The /trips/request schema requires the
+        // UUID, not the readable "STANDARD"/"XL"/"LUX" codes. If the
+        // seed ever regenerates these IDs, update them here. Fetch with:
+        //   SELECT id, code FROM "VehicleType" ORDER BY code;
+        VehicleClass.STANDARD -> "768bacf6-d177-4af7-9b57-d82fe9d3a0cf"
+        VehicleClass.XL       -> "6dcc92b7-b6c6-4467-baf6-80840a0a70e5"
+        VehicleClass.LUX      -> "386fb1e5-ec8f-4cc8-b451-b1ad703dfc74"
+    }
 
     private fun haversineKm(a: LatLng, b: LatLng): Double {
         val r = 6371.0

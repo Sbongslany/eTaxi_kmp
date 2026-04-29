@@ -51,13 +51,16 @@ object HomeScreen : Screen {
             initial = DriverOnboardingState.APPROVED,
         )
 
-        // Refresh once when this screen mounts. We block the routing
-        // decision until the refresh resolves so we don't flash the
-        // wrong shell on first frame.
+        // Refresh once when this screen mounts AND the user is a driver.
+        // Calling refreshOnboarding() for a rider hits /drivers/me which
+        // returns 403 and just adds noise to the backend log. Riders
+        // never need driver onboarding state at all.
         var refreshed by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) {
-            (driverRepo as? RemoteDriverRepository)
-                ?.runCatching { refreshOnboarding() }
+        LaunchedEffect(role) {
+            if (role == UserRole.DRIVER) {
+                (driverRepo as? RemoteDriverRepository)
+                    ?.runCatching { refreshOnboarding() }
+            }
             refreshed = true
         }
 

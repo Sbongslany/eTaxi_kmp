@@ -3,39 +3,25 @@ package za.co.etaxi.app.core.location
 import kotlinx.coroutines.flow.Flow
 import za.co.etaxi.app.domain.model.LatLng
 
-// Cross-platform GPS streamer.
+// Cross-platform GPS abstraction.
 //
-// Implementations:
-//   - androidMain: starts a foreground service that uses
-//     FusedLocationProviderClient at HIGH_ACCURACY priority and emits
-//     a flow of LatLng updates while the service is alive.
-//   - iosMain: stub that emits nothing (iOS deferred per project plan).
-//
-// Permission state: on Android, the caller is responsible for ensuring
-// ACCESS_FINE_LOCATION + (Android 14+) FOREGROUND_SERVICE_LOCATION are
-// granted before calling start(). If permissions are missing the flow
-// will simply not emit; no exception thrown.
-//
-// Usage:
-//   val streamer = rememberLocationStreamer()
-//   LaunchedEffect(active) {
-//       if (active) {
-//           streamer.start()
-//           streamer.locations.collect { pos -> ... push to backend ... }
-//       } else {
-//           streamer.stop()
-//       }
-//   }
+// `locations` is a continuous flow that's only populated while start()
+// has been called. `lastKnownLocation()` is a one-shot helper that
+// returns the device's most recent fix without requiring the caller
+// to subscribe to the continuous stream — used by go-online and home
+// screens that just need the user's current position once.
 interface LocationStreamer {
     val locations: Flow<LatLng>
     fun start()
     fun stop()
+    suspend fun lastKnownLocation(): LatLng?
 }
 
-// No-op streamer that emits nothing. Used as a fallback on platforms
-// that don't have a real implementation, or when DI binding fails.
+// No-op streamer used as a default and on iOS until that platform
+// is wired up. Returns nothing for both stream and one-shot reads.
 class NoopLocationStreamer : LocationStreamer {
     override val locations: Flow<LatLng> = kotlinx.coroutines.flow.emptyFlow()
     override fun start() {}
     override fun stop() {}
+    override suspend fun lastKnownLocation(): LatLng? = null
 }

@@ -49,7 +49,12 @@ val repositoryModule: Module = module {
             RemoteSessionRepository(authApi = get(), tokens = get())
         }
         single<DriverRepository> {
-            RemoteDriverRepository(api = get(), tripApi = get(), ws = get())
+            RemoteDriverRepository(
+                api = get(),
+                tripApi = get(),
+                ws = get(),
+                locationStreamer = get(),
+            )
         }
         single<RiderRepository> {
             RemoteRiderRepository(tripApi = get(), ws = get())

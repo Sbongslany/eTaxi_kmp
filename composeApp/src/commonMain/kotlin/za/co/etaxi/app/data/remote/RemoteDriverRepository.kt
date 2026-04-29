@@ -49,6 +49,7 @@ class RemoteDriverRepository(
     private val api: RemoteDriverApi,
     private val tripApi: RemoteTripApi,
     private val ws: WsClient,
+    private val locationStreamer: za.co.etaxi.app.core.location.LocationStreamer,
 ) : DriverRepository {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -92,7 +93,17 @@ class RemoteDriverRepository(
 
     override suspend fun setOnline(online: Boolean) {
         if (online) {
-            val res = api.goOnline(GoOnlineRequest(lat = -26.2041, lng = 28.0473))
+            // Try real GPS first. If permission is denied or no fix is
+            // available within 5s, fall back to a coord close to the
+            // rider's default saved pickup ("Home" / 12 Helen Rd, Sandton
+            // at -26.1076, 28.0567) so demo dispatch works on emulators
+            // and devices without a recent GPS fix. The matcher's default
+            // search radius is small (~5 km), so going online far from
+            // the rider's pickup means the dispatcher returns "no
+            // drivers available".
+            val pos = locationStreamer.lastKnownLocation()
+                ?: LatLng(-26.1076, 28.0567)
+            val res = api.goOnline(GoOnlineRequest(lat = pos.lat, lng = pos.lng))
             if (res is ApiResult.Success<*>) _isOnline.value = true
         } else {
             val res = api.goOffline()
@@ -126,6 +137,17 @@ class RemoteDriverRepository(
         val res = api.addVehicle(req)
         if (res is ApiResult.Success<*>) {
             val vehicle = (res.value as VehicleDto).toDomain(requestedClass = vehicleClass)
+            // Auto-activate the vehicle. The backend's addVehicle service
+            // doesn't set activeVehicleId on its own, which means the
+            // driver can't go online until something does. We set it
+            // here so the rest of the onboarding flow has a usable
+            // active vehicle reference. If the driver already has a
+            // different active vehicle this is a no-op-ish overwrite,
+            // which matches "newest vehicle becomes the working one"
+            // semantics.
+            runCatching {
+                api.setActiveVehicle(SetActiveVehicleRequest(vehicleId = vehicle.id))
+            }
             refreshOnboarding()
             return vehicle
         }
@@ -424,9 +446,7 @@ class RemoteDriverRepository(
         year = year,
         color = color,
         plateNumber = plateNumber,
-        vehicleClass = requestedClass
-            ?: runCatching { VehicleClass.valueOf(vehicleTypeId.uppercase()) }
-                .getOrDefault(VehicleClass.STANDARD),
+        vehicleClass = requestedClass ?: vehicleTypeIdToClass(vehicleTypeId),
         status = runCatching { VehicleStatus.valueOf(status) }
             .getOrDefault(VehicleStatus.PENDING),
         isActive = activeVehicleId != null && activeVehicleId == id,
@@ -453,8 +473,7 @@ class RemoteDriverRepository(
             address = dropoffAddress,
             location = LatLng(dropoffLat, dropoffLng),
         )
-        val cls = runCatching { VehicleClass.valueOf(vehicleTypeId.uppercase()) }
-            .getOrDefault(VehicleClass.STANDARD)
+        val cls = vehicleTypeIdToClass(vehicleTypeId)
         val parsedRequestedAt = createdAt
             ?.let { runCatching { Instant.parse(it) }.getOrNull() }
             ?: Clock.System.now()
@@ -531,5 +550,17 @@ class RemoteDriverRepository(
                 else DriverOnboardingState.IN_PROGRESS
             }
         }
+    }
+
+    // Map a backend VehicleType UUID back to the readable enum.
+    // The seeded UUIDs are stable; if a re-seed regenerates them,
+    // update both this helper and vehicleClassToTypeCode in
+    // RemoteRiderRepository.kt.
+    private fun vehicleTypeIdToClass(id: String): VehicleClass = when (id) {
+        "768bacf6-d177-4af7-9b57-d82fe9d3a0cf" -> VehicleClass.STANDARD
+        "6dcc92b7-b6c6-4467-baf6-80840a0a70e5" -> VehicleClass.XL
+        "386fb1e5-ec8f-4cc8-b451-b1ad703dfc74" -> VehicleClass.LUX
+        else -> runCatching { VehicleClass.valueOf(id.uppercase()) }
+            .getOrDefault(VehicleClass.STANDARD)
     }
 }

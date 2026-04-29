@@ -96,15 +96,16 @@ class WsClient(
             return
         }
         client.webSocket(
-            urlString = ApiConfig.WS_BASE_URL,
+            urlString = "${ApiConfig.WS_BASE_URL}?token=$token",
             request = {
+                // Header is harmless if the server ignores it.
                 header(HttpHeaders.Authorization, "Bearer $token")
             },
         ) {
-            // Send auth as first message in case the server reads it from
-            // the message stream rather than (or in addition to) the
-            // Authorization header.
-            send(Frame.Text("auth:$token"))
+            // No first-message auth frame: backend reads the token
+            // from the URL query param during the upgrade handshake.
+            // Sending an "auth:<token>" text frame here would be parsed
+            // as JSON by onClientMessage and rejected.
 
             // Read frames until the connection closes.
             for (frame in incoming) {

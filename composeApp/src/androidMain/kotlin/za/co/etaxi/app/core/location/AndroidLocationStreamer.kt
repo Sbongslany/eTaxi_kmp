@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -14,16 +15,11 @@ import com.google.android.gms.location.Priority
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import za.co.etaxi.app.domain.model.LatLng
+import kotlin.coroutines.resume
 
-// Android implementation. Uses FusedLocationProviderClient with HIGH_ACCURACY
-// at 3-second intervals — same cadence as the simulated location we
-// replaced. No foreground service: the driver is expected to keep the
-// active-trip screen visible. If the app is backgrounded, location
-// updates pause until they return; that's acceptable for v1.
-//
-// Permission: caller MUST request ACCESS_FINE_LOCATION at runtime
-// before start(). If permission is missing start() is a no-op.
 class AndroidLocationStreamer(
     private val context: Context,
 ) : LocationStreamer {
@@ -38,7 +34,7 @@ class AndroidLocationStreamer(
 
     private val request: LocationRequest = LocationRequest.Builder(
         Priority.PRIORITY_HIGH_ACCURACY,
-        3_000L,  // 3 seconds
+        3_000L,
     ).setMinUpdateIntervalMillis(1_500L).build()
 
     private val callback = object : LocationCallback() {
@@ -69,6 +65,44 @@ class AndroidLocationStreamer(
         } catch (_: Throwable) {
         }
         running = false
+    }
+
+    @SuppressLint("MissingPermission")
+    override suspend fun lastKnownLocation(): LatLng? {
+        if (!hasPermission()) return null
+        // Try the cached lastLocation first — it's instant if available.
+        val cached: LatLng? = try {
+            suspendCancellableCoroutine { cont ->
+                client.lastLocation
+                    .addOnSuccessListener { loc ->
+                        cont.resume(loc?.let { LatLng(it.latitude, it.longitude) })
+                    }
+                    .addOnFailureListener { cont.resume(null) }
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        if (cached != null) return cached
+
+        // Cache miss — request a fresh fix with a 5-second timeout.
+        return withTimeoutOrNull(5_000L) {
+            suspendCancellableCoroutine { cont ->
+                try {
+                    client.getCurrentLocation(
+                        CurrentLocationRequest.Builder()
+                            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                            .build(),
+                        null,
+                    )
+                        .addOnSuccessListener { loc ->
+                            cont.resume(loc?.let { LatLng(it.latitude, it.longitude) })
+                        }
+                        .addOnFailureListener { cont.resume(null) }
+                } catch (_: Throwable) {
+                    cont.resume(null)
+                }
+            }
+        }
     }
 
     private fun hasPermission(): Boolean =
