@@ -43,6 +43,13 @@ data class DriverPreview(
     val photoUrl: String? = null,
 )
 
+data class RiderPreview(
+    val id: String,
+    val name: String,
+    val rating: Double = 5.0,
+    val photoUrl: String? = null,
+)
+
 data class Trip(
     val id: String,
     val status: TripStatus,
@@ -55,6 +62,7 @@ data class Trip(
     val durationMinutes: Int,
     val requestedAt: Instant,
     val driver: DriverPreview? = null,
+    val rider: RiderPreview? = null,
 )
 
 data class DriverIncomingRequest(

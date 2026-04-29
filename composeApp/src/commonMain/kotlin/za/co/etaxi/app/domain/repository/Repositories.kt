@@ -80,6 +80,8 @@ interface DriverRepository {
     suspend fun markArrived(tripId: String)
     suspend fun startTrip(tripId: String)
     suspend fun endTrip(tripId: String)
+    suspend fun cancelTrip(tripId: String, reason: String? = null)
+    suspend fun addStop(tripId: String, stop: Place): Trip
     suspend fun history(): List<Trip>
     suspend fun earningsSummary(): DriverEarnings
 

@@ -1,30 +1,43 @@
 package za.co.etaxi.app.data.remote
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import za.co.etaxi.app.core.network.AddVehicleRequest
 import za.co.etaxi.app.core.network.ApiResult
 import za.co.etaxi.app.core.network.DocumentDto
 import za.co.etaxi.app.core.network.DriverProfileDto
 import za.co.etaxi.app.core.network.GoOnlineRequest
+import za.co.etaxi.app.core.network.LocationPingBody
+import za.co.etaxi.app.core.network.RatingBody
 import za.co.etaxi.app.core.network.SetActiveVehicleRequest
+import za.co.etaxi.app.core.network.TripDto
 import za.co.etaxi.app.core.network.UpdateLocationRequest
 import za.co.etaxi.app.core.network.UploadDocumentRequest
 import za.co.etaxi.app.core.network.UploadUrlRequest
 import za.co.etaxi.app.core.network.UploadUrlResponse
 import za.co.etaxi.app.core.network.VehicleDto
 import za.co.etaxi.app.core.upload.FileUploader
+import za.co.etaxi.app.core.ws.TripEvent
+import za.co.etaxi.app.core.ws.WsClient
 import za.co.etaxi.app.domain.model.DocumentStatus
 import za.co.etaxi.app.domain.model.DocumentType
 import za.co.etaxi.app.domain.model.DriverDocument
 import za.co.etaxi.app.domain.model.DriverIncomingRequest
+import za.co.etaxi.app.domain.model.DriverPreview
 import za.co.etaxi.app.domain.model.DriverVehicle
 import za.co.etaxi.app.domain.model.LatLng
+import za.co.etaxi.app.domain.model.Place
 import za.co.etaxi.app.domain.model.RatingSubmission
 import za.co.etaxi.app.domain.model.Trip
+import za.co.etaxi.app.domain.model.TripStatus
 import za.co.etaxi.app.domain.model.VehicleClass
 import za.co.etaxi.app.domain.model.VehicleStatus
 import za.co.etaxi.app.domain.model.WalletTransaction
@@ -34,7 +47,11 @@ import za.co.etaxi.app.domain.repository.DriverRepository
 
 class RemoteDriverRepository(
     private val api: RemoteDriverApi,
+    private val tripApi: RemoteTripApi,
+    private val ws: WsClient,
 ) : DriverRepository {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _isOnline = MutableStateFlow(false)
     override val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
@@ -42,14 +59,27 @@ class RemoteDriverRepository(
     private val _onboardingState = MutableStateFlow(DriverOnboardingState.NOT_STARTED)
     override val onboardingState: StateFlow<DriverOnboardingState> = _onboardingState.asStateFlow()
 
+    // Most recent ride request that the driver has not yet accepted/declined.
+    // Driven by NEW_RIDE_REQUEST WS events.
     private val _incoming = MutableStateFlow<DriverIncomingRequest?>(null)
+
+    // Active trip the driver is currently on. Set when they accept,
+    // updated on each status transition, cleared when the trip ends.
     private val _activeTrip = MutableStateFlow<Trip?>(null)
 
     private var activeVehicleId: String? = null
 
+    init {
+        ws.connect()
+        scope.launch {
+            ws.events.collect { event -> onWsEvent(event) }
+        }
+    }
+
     override fun incomingRequests(): Flow<DriverIncomingRequest?> = _incoming.asStateFlow()
     override fun activeTrip(): Flow<Trip?> = _activeTrip.asStateFlow()
 
+    // ================= Profile / online =================
     suspend fun refreshOnboarding() {
         val res = api.me()
         if (res is ApiResult.Success<*>) {
@@ -70,6 +100,7 @@ class RemoteDriverRepository(
         }
     }
 
+    // ================= Vehicles =================
     override suspend fun vehicles(): List<DriverVehicle> {
         val res = api.me()
         return if (res is ApiResult.Success<*>) {
@@ -107,6 +138,7 @@ class RemoteDriverRepository(
         refreshOnboarding()
     }
 
+    // ================= Documents =================
     override suspend fun documents(): List<DriverDocument> {
         val backendByType: Map<DocumentType, DocumentDto> = run {
             val res = api.me()
@@ -129,31 +161,19 @@ class RemoteDriverRepository(
         }
     }
 
-    // Interface contract: kept as a no-op throw to make accidental
-    // mock-style calls fail loudly. Real upload uses uploadDocumentWithBytes.
     override suspend fun uploadDocument(type: DocumentType): DriverDocument {
         throw IllegalStateException(
-            "Use uploadDocumentWithBytes(type, bytes) instead — " +
+            "Use uploadDocumentWithBytes(type, bytes) instead - " +
                 "the real backend requires bytes uploaded to a presigned URL."
         )
     }
 
-    // Real upload flow:
-    //   1. POST /storage/upload-url -> { uploadUrl, publicUrl }
-    //   2. PUT bytes to uploadUrl (S3 etc.) with the right contentType
-    //   3. POST /drivers/documents { type, url: publicUrl }
-    //   4. refreshOnboarding() so the driver state reflects the new doc
-    //
-    // The DocumentsStep composable calls this directly (it has a
-    // RemoteDriverRepository-typed reference because Koin returns the
-    // concrete type for additional methods like this one).
     suspend fun uploadDocumentWithBytes(
         type: DocumentType,
         bytes: ByteArray,
         contentType: String = "image/jpeg",
         filenameSuffix: String = "jpg",
     ): DriverDocument {
-        // Step 1: presigned URL
         val uploadRes = api.getUploadUrl(
             UploadUrlRequest(
                 folder = "documents",
@@ -168,19 +188,14 @@ class RemoteDriverRepository(
             throw Exception("Upload URL failed: ${failure.message}")
         }
 
-        // Step 2: PUT bytes to S3
         val putOk = FileUploader.uploadBytes(
             presignedUrl = uploadResponse.uploadUrl,
             contentType = contentType,
             bytes = bytes,
         )
-        if (!putOk) {
-            throw Exception("Uploading file bytes to storage failed")
-        }
+        if (!putOk) throw Exception("Uploading file bytes to storage failed")
 
-        // Step 3: register the document with the backend
-        val publicUrl = uploadResponse.publicUrl
-            ?: uploadResponse.uploadUrl.substringBefore("?")
+        val publicUrl = uploadResponse.publicUrl ?: uploadResponse.uploadUrl.substringBefore("?")
         val docRes = api.uploadDocument(
             UploadDocumentRequest(type = type.name, url = publicUrl)
         )
@@ -212,25 +227,194 @@ class RemoteDriverRepository(
 
     override suspend fun walletTransactions(): List<WalletTransaction> = emptyList()
 
-    override suspend fun acceptRequest(tripId: String): Trip =
-        throw NotImplementedError("Trip endpoints land in the next patch")
-    override suspend fun declineRequest(tripId: String) =
-        throw NotImplementedError("Trip endpoints land in the next patch")
-    override suspend fun markArriving(tripId: String) =
-        throw NotImplementedError("Trip endpoints land in the next patch")
-    override suspend fun markArrived(tripId: String) =
-        throw NotImplementedError("Trip endpoints land in the next patch")
-    override suspend fun startTrip(tripId: String) =
-        throw NotImplementedError("Trip endpoints land in the next patch")
-    override suspend fun endTrip(tripId: String) =
-        throw NotImplementedError("Trip endpoints land in the next patch")
-    override suspend fun history(): List<Trip> = emptyList()
-    override suspend fun rateRider(submission: RatingSubmission) = Unit
+    // ================= Trip lifecycle =================
+    // The driver's active trip and incoming requests are managed jointly
+    // by HTTP responses (when the driver acts) and WS events (when the
+    // server pushes updates). After a successful HTTP call we set the
+    // local state so the UI updates immediately without waiting for the
+    // WS round-trip.
 
-    override suspend fun pushLocation(tripId: String, location: LatLng) {
-        api.updateLocation(UpdateLocationRequest(lat = location.lat, lng = location.lng))
+    override suspend fun acceptRequest(tripId: String): Trip {
+        val res = tripApi.accept(tripId)
+        if (res is ApiResult.Success<*>) {
+            val trip = (res.value as TripDto).toTripDomain()
+            _activeTrip.value = trip
+            _incoming.value = null
+            return trip
+        }
+        val failure = res as ApiResult.Failure
+        throw Exception("Accept failed: ${failure.message}")
     }
 
+    override suspend fun declineRequest(tripId: String) {
+        // Backend has no explicit decline endpoint — declining just
+        // means the driver doesn't accept, the dispatcher hands it to
+        // the next candidate. We just clear the local incoming request.
+        if (_incoming.value?.tripId == tripId) {
+            _incoming.value = null
+        }
+    }
+
+    override suspend fun markArriving(tripId: String) {
+        val res = tripApi.arriving(tripId)
+        if (res is ApiResult.Success<*>) {
+            _activeTrip.value = (res.value as TripDto).toTripDomain()
+        }
+    }
+
+    override suspend fun markArrived(tripId: String) {
+        val res = tripApi.arrived(tripId)
+        if (res is ApiResult.Success<*>) {
+            _activeTrip.value = (res.value as TripDto).toTripDomain()
+        }
+    }
+
+    override suspend fun startTrip(tripId: String) {
+        val res = tripApi.start(tripId)
+        if (res is ApiResult.Success<*>) {
+            _activeTrip.value = (res.value as TripDto).toTripDomain()
+        }
+    }
+
+    override suspend fun endTrip(tripId: String) {
+        val res = tripApi.end(tripId)
+        if (res is ApiResult.Success<*>) {
+            // End response is { trip, fare } but we accept TripDto-shape
+            // fallback; refresh from GET /trips/:id to be safe.
+            val refreshed = tripApi.get(tripId)
+            if (refreshed is ApiResult.Success<*>) {
+                _activeTrip.value = (refreshed.value as TripDto).toTripDomain()
+            } else {
+                _activeTrip.value = (res.value as TripDto).toTripDomain()
+            }
+        }
+    }
+
+    override suspend fun cancelTrip(tripId: String, reason: String?) {
+        val res = tripApi.cancel(tripId, reason ?: "Cancelled by driver")
+        if (res is ApiResult.Success<*>) {
+            _activeTrip.value = null
+        }
+    }
+
+    override suspend fun addStop(tripId: String, stop: za.co.etaxi.app.domain.model.Place): Trip {
+        val res = tripApi.addStop(
+            tripId,
+            za.co.etaxi.app.core.network.AddStopBody(
+                lat = stop.location.lat,
+                lng = stop.location.lng,
+                address = stop.address,
+            )
+        )
+        return if (res is ApiResult.Success<*>) {
+            val refreshed = tripApi.get(tripId)
+            val trip = if (refreshed is ApiResult.Success<*>) {
+                (refreshed.value as TripDto).toTripDomain()
+            } else {
+                (res.value as TripDto).toTripDomain()
+            }
+            _activeTrip.value = trip
+            trip
+        } else {
+            val failure = res as ApiResult.Failure
+            throw Exception("Add stop failed: ${failure.message}")
+        }
+    }
+
+    override suspend fun history(): List<Trip> = emptyList()
+
+    override suspend fun rateRider(submission: RatingSubmission) {
+        val active = _activeTrip.value ?: return
+        // riderId is on the TripDto, not on DriverPreview. We need a
+        // different lookup — fetch the full trip to get riderId.
+        val tripRes = tripApi.get(submission.tripId)
+        val toUserId = (tripRes as? ApiResult.Success<*>)
+            ?.let { (it.value as TripDto).riderId }
+            ?: return
+        tripApi.rate(
+            RatingBody(
+                tripId = submission.tripId,
+                toUserId = toUserId,
+                stars = submission.stars,
+                comment = submission.comment,
+            )
+        )
+        if (_activeTrip.value?.id == submission.tripId) {
+            _activeTrip.value = null
+        }
+    }
+
+    override suspend fun pushLocation(tripId: String, location: LatLng) {
+        // Two destinations: the driver's overall live location
+        // (drivers/location, used for matching) and the per-trip
+        // location channel (trips/:id/location, broadcast to the rider).
+        api.updateLocation(UpdateLocationRequest(lat = location.lat, lng = location.lng))
+        tripApi.location(
+            tripId,
+            LocationPingBody(lat = location.lat, lng = location.lng),
+        )
+    }
+
+    // ================== WS event handling ==================
+    private suspend fun onWsEvent(event: TripEvent) {
+        when (event) {
+            is TripEvent.NewRideRequest -> {
+                // Show in the driver's incoming-request sheet.
+                _incoming.value = DriverIncomingRequest(
+                    tripId = event.tripId,
+                    riderName = "Rider",
+                    riderRating = 5.0,
+                    pickup = Place(
+                        label = "Pickup",
+                        address = event.pickupAddress,
+                        location = LatLng(event.pickupLat, event.pickupLng),
+                    ),
+                    dropoff = Place(
+                        label = "Dropoff",
+                        address = event.dropoffAddress,
+                        location = LatLng(event.dropoffLat, event.dropoffLng),
+                    ),
+                    distanceKm = 0.0,  // server calculates ride distance, not surfaced here
+                    durationMinutes = 0,
+                    fareCents = event.estimatedFareCents,
+                    pickupDistanceKm = event.pickupDistanceKm,
+                )
+            }
+            is TripEvent.StatusUpdate -> {
+                // If this is our active trip, refresh from the server
+                // for the freshest data.
+                val active = _activeTrip.value
+                if (active != null && active.id == event.tripId) {
+                    val res = tripApi.get(event.tripId)
+                    if (res is ApiResult.Success<*>) {
+                        val trip = (res.value as TripDto).toTripDomain()
+                        if (trip.status == TripStatus.COMPLETED ||
+                            trip.status == TripStatus.CANCELLED
+                        ) {
+                            // Keep the trip set so the rating screen has
+                            // context, but the UI uses status to navigate.
+                            _activeTrip.value = trip
+                        } else {
+                            _activeTrip.value = trip
+                        }
+                    }
+                }
+            }
+            is TripEvent.DriverLocation -> {
+                // Driver doesn't care about its own location updates here.
+            }
+            is TripEvent.Cancelled -> {
+                if (_activeTrip.value?.id == event.tripId) {
+                    _activeTrip.value = null
+                }
+                if (_incoming.value?.tripId == event.tripId) {
+                    _incoming.value = null
+                }
+            }
+        }
+    }
+
+    // ================== Mappers ==================
     private fun VehicleDto.toDomain(
         requestedClass: VehicleClass? = null,
     ): DriverVehicle = DriverVehicle(
@@ -258,18 +442,70 @@ class RemoteDriverRepository(
             rejectionReason = rejectionReason,
         )
 
-    // Derives the driver's onboarding state from their profile.
-    //
-    // VERIFIED      -> APPROVED. Backend admin has approved them.
-    // SUSPENDED /
-    // DEACTIVATED  -> REJECTED. Will route them back into the wizard.
-    // PENDING (default) drilling deeper:
-    //   * No active vehicle yet -> NOT_STARTED.
-    //   * Active vehicle but no docs uploaded -> IN_PROGRESS.
-    //   * Active vehicle AND every required document is uploaded
-    //     (any non-MISSING status counts) -> AWAITING_REVIEW. This is
-    //     the state HomeScreen checks to send the driver into the
-    //     DriverShell rather than back into the wizard.
+    private fun TripDto.toTripDomain(): Trip {
+        val pickup = Place(
+            label = "Pickup",
+            address = pickupAddress,
+            location = LatLng(pickupLat, pickupLng),
+        )
+        val dropoff = Place(
+            label = "Dropoff",
+            address = dropoffAddress,
+            location = LatLng(dropoffLat, dropoffLng),
+        )
+        val cls = runCatching { VehicleClass.valueOf(vehicleTypeId.uppercase()) }
+            .getOrDefault(VehicleClass.STANDARD)
+        val parsedRequestedAt = createdAt
+            ?.let { runCatching { Instant.parse(it) }.getOrNull() }
+            ?: Clock.System.now()
+        val driverPreview = driver?.let { d ->
+            val name = listOfNotNull(d.user?.firstName, d.user?.lastName)
+                .joinToString(" ").ifBlank { "Driver" }
+            DriverPreview(
+                id = d.user?.id ?: d.id,
+                name = name,
+                rating = d.rating ?: 5.0,
+                vehicleModel = d.activeVehicle?.let { "${it.make} ${it.model}" }
+                    ?: vehicle?.let { "${it.make} ${it.model}" }
+                    ?: "",
+                plateNumber = d.activeVehicle?.plateNumber
+                    ?: vehicle?.plateNumber
+                    ?: "",
+                photoUrl = d.user?.profilePhoto,
+            )
+        }
+        val riderPreview = rider?.let { r ->
+            val name = listOfNotNull(r.firstName, r.lastName)
+                .joinToString(" ").ifBlank { "Rider" }
+            za.co.etaxi.app.domain.model.RiderPreview(
+                id = r.id,
+                name = name,
+                rating = 5.0,
+                photoUrl = r.profilePhoto,
+            )
+        }
+        val stopPlaces = stops.map {
+            Place(label = "Stop", address = it.address, location = LatLng(it.lat, it.lng))
+        }
+        return Trip(
+            id = id,
+            status = parseStatus(status),
+            pickup = pickup,
+            dropoff = dropoff,
+            stops = stopPlaces,
+            vehicleClass = cls,
+            fareCents = finalFareCents ?: estimatedFareCents,
+            distanceKm = (distanceMeters ?: 0) / 1000.0,
+            durationMinutes = (durationSeconds ?: 0) / 60,
+            requestedAt = parsedRequestedAt,
+            driver = driverPreview,
+            rider = riderPreview,
+        )
+    }
+
+    private fun parseStatus(s: String): TripStatus =
+        runCatching { TripStatus.valueOf(s) }.getOrDefault(TripStatus.REQUESTED)
+
     private fun computeOnboardingState(profile: DriverProfileDto): DriverOnboardingState {
         return when (profile.status) {
             "VERIFIED" -> DriverOnboardingState.APPROVED
@@ -278,9 +514,6 @@ class RemoteDriverRepository(
                 val hasVehicle = profile.activeVehicle != null
                 if (!hasVehicle) return DriverOnboardingState.NOT_STARTED
 
-                // All seven required document types must have been
-                // submitted (i.e. exist on the backend, not necessarily
-                // approved). Profile photo is the only optional one.
                 val uploadedRequired: Set<String> = profile.documents
                     .map { it.type }
                     .toSet()

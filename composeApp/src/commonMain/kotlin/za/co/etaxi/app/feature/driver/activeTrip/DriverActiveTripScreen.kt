@@ -7,17 +7,36 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowOutward
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,7 +47,7 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
-import za.co.etaxi.app.core.components.MockMapCanvas
+import za.co.etaxi.app.core.location.LocationStreamer
 import za.co.etaxi.app.core.map.EtaxiMap
 import za.co.etaxi.app.core.map.MapCamera
 import za.co.etaxi.app.core.map.MapState
@@ -36,47 +55,49 @@ import za.co.etaxi.app.core.map.defaultJoburgCamera
 import za.co.etaxi.app.core.theme.EtaxiColors
 import za.co.etaxi.app.core.util.formatRand
 import za.co.etaxi.app.domain.model.LatLng
+import za.co.etaxi.app.domain.model.Trip
 import za.co.etaxi.app.domain.model.TripStatus
 import za.co.etaxi.app.domain.repository.DriverRepository
 import za.co.etaxi.app.feature.driver.rate.RateRiderScreen
 
 class DriverActiveTripScreen(private val tripId: String) : Screen {
+
     @Composable
     override fun Content() {
         val nav = LocalNavigator.currentOrThrow
         val repo: DriverRepository = koinInject()
+        val streamer: LocationStreamer = koinInject()
         val scope = rememberCoroutineScope()
         val trip by repo.activeTrip().collectAsState(initial = null)
 
-        // Driver's own position (what we render + push to backend)
         var driverPos by remember { mutableStateOf<LatLng?>(null) }
+        var showAddStop by remember { mutableStateOf(false) }
+        var cancelling by remember { mutableStateOf(false) }
 
-        // Simulate pushing location to backend every 3s while in progress,
-        // and interpolate the visible position along the route.
-        LaunchedEffect(trip?.status, trip?.id) {
-            if (trip?.status == TripStatus.IN_PROGRESS) {
-                val t = trip ?: return@LaunchedEffect
-                var step = 0
-                while (trip?.status == TripStatus.IN_PROGRESS) {
-                    val progress = (step.coerceAtMost(30)) / 30.0
-                    val lat = t.pickup.location.lat +
-                        (t.dropoff.location.lat - t.pickup.location.lat) * progress
-                    val lng = t.pickup.location.lng +
-                        (t.dropoff.location.lng - t.pickup.location.lng) * progress
-                    val pos = LatLng(lat, lng)
-                    driverPos = pos
-                    repo.pushLocation(t.id, pos)
-                    delay(3_000)
-                    step++
-                }
-            } else if (trip?.status == TripStatus.DRIVER_ARRIVING ||
-                       trip?.status == TripStatus.ACCEPTED) {
-                // Before starting the trip, park the driver near pickup.
-                driverPos = trip?.pickup?.location
+        // Start the location streamer when the screen mounts and stop on
+        // dispose. The streamer is shared via Koin so multiple subscribers
+        // on the same flow are fine.
+        LaunchedEffect(Unit) {
+            streamer.start()
+        }
+
+        // Forward GPS pings to the backend. We push every received fix
+        // (the streamer is configured at 3-second intervals).
+        LaunchedEffect(trip?.id, trip?.status) {
+            val t = trip ?: return@LaunchedEffect
+            // Only push during the actively-moving statuses.
+            val pushable = t.status == TripStatus.IN_PROGRESS ||
+                t.status == TripStatus.DRIVER_ARRIVING ||
+                t.status == TripStatus.ACCEPTED ||
+                t.status == TripStatus.ARRIVED
+            if (!pushable) return@LaunchedEffect
+            streamer.locations.collect { pos ->
+                driverPos = pos
+                runCatching { repo.pushLocation(t.id, pos) }
             }
         }
 
-        // On completion, navigate to rate-rider screen
+        // On completion, navigate to rate-rider.
         LaunchedEffect(trip?.status) {
             if (trip?.status == TripStatus.COMPLETED) {
                 val t = trip ?: return@LaunchedEffect
@@ -84,12 +105,23 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                 nav.replace(
                     RateRiderScreen(
                         tripId = t.id,
-                        riderName = "Xolani N.",
+                        riderName = t.rider?.name ?: "Rider",
                         fareLabel = formatRand((t.fareCents * 0.8).toInt()),
                     ),
                 )
             } else if (trip == null) {
                 nav.pop()
+            }
+        }
+
+        // Build the route polyline: pickup -> stops -> dropoff
+        val routePoints: List<LatLng> = remember(trip) {
+            val t = trip
+            if (t == null) emptyList()
+            else buildList {
+                add(t.pickup.location)
+                t.stops.forEach { add(it.location) }
+                add(t.dropoff.location)
             }
         }
 
@@ -106,113 +138,265 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                     pickup = trip?.pickup?.location,
                     dropoff = trip?.dropoff?.location,
                     driver = driverPos,
+                    route = routePoints,
                 ),
                 modifier = Modifier.fillMaxSize(),
             )
 
             trip?.let { t ->
-                // Rider card
-                Column(
+                // Rider card (top)
+                RiderCard(
+                    trip = t,
+                    onCancel = {
+                        scope.launch {
+                            cancelling = true
+                            runCatching { repo.cancelTrip(t.id, "Cancelled by driver") }
+                            cancelling = false
+                            nav.pop()
+                        }
+                    },
+                    cancelling = cancelling,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = 56.dp, start = 16.dp, end = 16.dp)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(MaterialTheme.colorScheme.surface)
-                        .border(1.dp, EtaxiColors.SlidesEdge, RoundedCornerShape(20.dp))
-                        .padding(16.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(EtaxiColors.Power),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text("X", color = EtaxiColors.InkOnPower, style = MaterialTheme.typography.titleLarge)
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Rider", style = MaterialTheme.typography.labelSmall, color = EtaxiColors.InkFaint)
-                            Text("Xolani N.", style = MaterialTheme.typography.titleMedium, color = EtaxiColors.Ink)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.Star, null, tint = EtaxiColors.Power, modifier = Modifier.size(12.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("4.91", style = MaterialTheme.typography.bodySmall, color = EtaxiColors.InkMuted)
+                        .fillMaxWidth(),
+                )
+
+                // Action sheet (bottom)
+                ActionSheet(
+                    trip = t,
+                    onPrimary = {
+                        scope.launch {
+                            when (t.status) {
+                                TripStatus.ACCEPTED        -> repo.markArriving(t.id)
+                                TripStatus.DRIVER_ARRIVING -> repo.markArrived(t.id)
+                                TripStatus.ARRIVED         -> repo.startTrip(t.id)
+                                TripStatus.IN_PROGRESS     -> repo.endTrip(t.id)
+                                else                       -> nav.pop()
                             }
                         }
-                        Text(formatRand(t.fareCents), style = MaterialTheme.typography.titleLarge, color = EtaxiColors.Power)
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.PlayArrow, null, tint = EtaxiColors.Power, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(t.pickup.label, color = EtaxiColors.Ink, style = MaterialTheme.typography.bodyLarge)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.ArrowOutward, null, tint = EtaxiColors.InkMuted, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(t.dropoff.label, color = EtaxiColors.InkMuted, style = MaterialTheme.typography.bodyLarge)
-                    }
-                }
-
-                // Action sheet
-                Column(
+                    },
+                    onAddStop = { showAddStop = true },
+                    canAddStop = t.status == TripStatus.IN_PROGRESS ||
+                        t.status == TripStatus.ACCEPTED,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(24.dp),
+                        .fillMaxWidth(),
+                )
+            }
+
+            // Stop streaming location when this screen leaves the
+            // composition. Without this the streamer keeps firing GPS
+            // pings to a finished trip.
+            androidx.compose.runtime.DisposableEffect(Unit) {
+                onDispose {
+                    streamer.stop()
+                }
+            }
+        }
+
+        // Add-stop overlay
+        DriverAddStopSheet(
+            visible = showAddStop,
+            tripId = trip?.id,
+            onDismiss = { showAddStop = false },
+            onAdded = { showAddStop = false },
+        )
+    }
+}
+
+@Composable
+private fun RiderCard(
+    trip: Trip,
+    onCancel: () -> Unit,
+    cancelling: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, EtaxiColors.SlidesEdge, RoundedCornerShape(20.dp))
+            .padding(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(EtaxiColors.Power),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = trip.rider?.name?.firstOrNull()?.uppercase()?.toString() ?: "R",
+                    color = EtaxiColors.InkOnPower,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Rider", style = MaterialTheme.typography.labelSmall, color = EtaxiColors.InkFaint)
+                Text(
+                    trip.rider?.name ?: "Rider",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = EtaxiColors.Ink,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Star, null, tint = EtaxiColors.Power, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = (trip.rider?.rating ?: 5.0).toString(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = EtaxiColors.InkMuted,
+                    )
+                }
+            }
+            // Cancel button
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(EtaxiColors.Danger.copy(alpha = 0.15f))
+                    .clickable(enabled = !cancelling, onClick = onCancel),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.Close, null,
+                    tint = EtaxiColors.Danger,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                formatRand(trip.fareCents),
+                style = MaterialTheme.typography.titleLarge,
+                color = EtaxiColors.Power,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.PlayArrow, null, tint = EtaxiColors.Power, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                trip.pickup.address,
+                color = EtaxiColors.Ink,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+        // Stops in between (if any)
+        trip.stops.forEach { stop ->
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Add, null, tint = EtaxiColors.Power, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    stop.address,
+                    color = EtaxiColors.InkMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Rounded.ArrowOutward, null,
+                tint = EtaxiColors.InkMuted,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                trip.dropoff.address,
+                color = EtaxiColors.InkMuted,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActionSheet(
+    trip: Trip,
+    onPrimary: () -> Unit,
+    onAddStop: () -> Unit,
+    canAddStop: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(24.dp),
+    ) {
+        AnimatedContent(
+            targetState = trip.status,
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            label = "status",
+        ) { s ->
+            Text(
+                when (s) {
+                    TripStatus.ACCEPTED        -> "Head to pickup"
+                    TripStatus.DRIVER_ARRIVING -> "Arriving at pickup"
+                    TripStatus.ARRIVED         -> "You're at the pickup point"
+                    TripStatus.IN_PROGRESS     -> "Trip in progress"
+                    TripStatus.COMPLETED       -> "Trip completed"
+                    else                       -> "—"
+                },
+                style = MaterialTheme.typography.headlineMedium,
+                color = EtaxiColors.Ink,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "${trip.distanceKm} km - ${trip.durationMinutes} min - you earn ${formatRand((trip.fareCents * 0.8).toInt())}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = EtaxiColors.InkMuted,
+        )
+        Spacer(Modifier.height(20.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Add stop pill (only when canAddStop)
+            if (canAddStop) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(EtaxiColors.SlidesRaised)
+                        .border(1.dp, EtaxiColors.SlidesEdge, RoundedCornerShape(18.dp))
+                        .clickable(onClick = onAddStop)
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    AnimatedContent(
-                        targetState = t.status,
-                        transitionSpec = { fadeIn() togetherWith fadeOut() },
-                        label = "status",
-                    ) { s ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Add, null, tint = EtaxiColors.Ink, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(
-                            when (s) {
-                                TripStatus.ACCEPTED        -> "Head to pickup"
-                                TripStatus.DRIVER_ARRIVING -> "Arriving at pickup"
-                                TripStatus.ARRIVED         -> "You're at the pickup point"
-                                TripStatus.IN_PROGRESS     -> "Trip in progress"
-                                TripStatus.COMPLETED       -> "Trip completed"
-                                else                       -> "—"
-                            },
-                            style = MaterialTheme.typography.headlineMedium,
+                            "Add stop",
+                            style = MaterialTheme.typography.labelLarge,
                             color = EtaxiColors.Ink,
                         )
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "${t.distanceKm} km • ${t.durationMinutes} min · you earn ${formatRand((t.fareCents * 0.8).toInt())}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = EtaxiColors.InkMuted,
-                    )
-                    Spacer(Modifier.height(20.dp))
-
-                    val (label, action) = when (t.status) {
-                        TripStatus.ACCEPTED        -> "I'm on my way" to { scope.launch { repo.markArriving(t.id) } }
-                        TripStatus.DRIVER_ARRIVING -> "I've arrived"   to { scope.launch { repo.markArrived(t.id) } }
-                        TripStatus.ARRIVED         -> "Start trip"      to { scope.launch { repo.startTrip(t.id) } }
-                        TripStatus.IN_PROGRESS     -> "End trip"        to { scope.launch { repo.endTrip(t.id) } }
-                        else                       -> "Close"           to { nav.pop() }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(60.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(EtaxiColors.Power)
-                            .clickable { action() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(label, style = MaterialTheme.typography.titleLarge, color = EtaxiColors.InkOnPower)
-                    }
                 }
+            }
+            // Primary action button
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(60.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(EtaxiColors.Power)
+                    .clickable { onPrimary() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    when (trip.status) {
+                        TripStatus.ACCEPTED        -> "I'm on my way"
+                        TripStatus.DRIVER_ARRIVING -> "I've arrived"
+                        TripStatus.ARRIVED         -> "Start trip"
+                        TripStatus.IN_PROGRESS     -> "End trip"
+                        else                       -> "Close"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    color = EtaxiColors.InkOnPower,
+                )
             }
         }
     }

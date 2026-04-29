@@ -9,6 +9,7 @@ import za.co.etaxi.app.domain.model.DriverDocument
 import za.co.etaxi.app.domain.model.DriverIncomingRequest
 import za.co.etaxi.app.domain.model.DriverVehicle
 import za.co.etaxi.app.domain.model.LatLng
+import za.co.etaxi.app.domain.model.Place
 import za.co.etaxi.app.domain.model.RatingSubmission
 import za.co.etaxi.app.domain.model.Trip
 import za.co.etaxi.app.domain.model.TripStatus
@@ -79,6 +80,20 @@ class MockDriverRepository : DriverRepository {
         _active.value = _active.value?.copy(status = TripStatus.COMPLETED)
         delay(400)
         _active.value = null
+    }
+
+    override suspend fun cancelTrip(tripId: String, reason: String?) {
+        _active.value = null
+    }
+
+    override suspend fun addStop(tripId: String, stop: Place): Trip {
+        val current = _active.value ?: throw IllegalStateException("No active trip")
+        val updated = current.copy(
+            stops = current.stops + stop,
+            fareCents = current.fareCents + 1500,
+        )
+        _active.value = updated
+        return updated
     }
 
     private fun transitionActive(next: TripStatus) {

@@ -1,220 +1,259 @@
 package za.co.etaxi.app.feature.rider.home
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CalendarMonth
-import androidx.compose.material.icons.rounded.Circle
-import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
+import za.co.etaxi.app.core.components.EtaxiPrimaryButton
+import za.co.etaxi.app.core.components.MockMapCanvas
 import za.co.etaxi.app.core.map.EtaxiMap
 import za.co.etaxi.app.core.map.MapCamera
 import za.co.etaxi.app.core.map.MapState
 import za.co.etaxi.app.core.map.defaultJoburgCamera
 import za.co.etaxi.app.core.theme.EtaxiColors
-import za.co.etaxi.app.domain.repository.SessionRepository
+import za.co.etaxi.app.core.util.formatDuration
+import za.co.etaxi.app.core.util.formatRand
+import za.co.etaxi.app.data.mock.MockData
+import za.co.etaxi.app.domain.model.Place
+import za.co.etaxi.app.domain.model.VehicleClass
+import za.co.etaxi.app.domain.model.VehicleClassOption
+import za.co.etaxi.app.domain.repository.RiderRepository
+import za.co.etaxi.app.feature.notifications.NotificationsScreen
+import za.co.etaxi.app.feature.profile.ProfileScreen
+import za.co.etaxi.app.feature.rider.destinationSearch.DestinationPickerBus
 import za.co.etaxi.app.feature.rider.destinationSearch.DestinationSearchScreen
-import za.co.etaxi.app.feature.rider.hire.CustomHireScreen
-import za.co.etaxi.app.feature.rider.profile.ProfileScreen
+import za.co.etaxi.app.feature.rider.history.RiderHistoryScreen
+import za.co.etaxi.app.feature.rider.tripInProgress.RiderTripInProgressScreen
 
-/**
- * Rider home — reference screenshot 3.
- *
- * Top:   eTaxi wordmark + avatar.
- * Below: pickup address pill (tappable to change pickup).
- * Map:   fullscreen behind, shows user position + recent nearby drivers.
- * Float: "📅 Hire" chip in indigo — shortcut to Custom Hire flow.
- * Sheet: Good evening greeting, "Where to?" big title, Search destination bar,
- *        horizontal chips (Home / Work / Airport / Shopping).
- */
 object RiderHomeScreen : Screen {
+
     @Composable
     override fun Content() {
-        val nav = LocalNavigator.currentOrThrow
-        val session: SessionRepository = koinInject()
-        val user by session.currentUser.collectAsState(initial = null)
-        val name = "there"
-        val initials = "X"
+        val navigator = LocalNavigator.currentOrThrow
+        val repo: RiderRepository = koinInject()
+        val scope = remember { CoroutineScope(Dispatchers.Default) }
 
-        Box(Modifier.fillMaxSize().background(EtaxiColors.Ink900)) {
-            EtaxiMap(
-                state = MapState(camera = defaultJoburgCamera()),
-                modifier = Modifier.fillMaxSize(),
-            )
+        var pickup by remember { mutableStateOf<Place?>(MockData.savedPlaces[0]) }
+        var dropoff by remember { mutableStateOf<Place?>(null) }
+        var options by remember { mutableStateOf<List<VehicleClassOption>>(emptyList()) }
+        var selectedOption by remember { mutableStateOf<VehicleClassOption?>(null) }
+        var requesting by remember { mutableStateOf(false) }
+        var requestError by remember { mutableStateOf<String?>(null) }
 
-            // Top chrome: wordmark + avatar + address
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 48.dp, start = 20.dp, end = 20.dp)
-                    .fillMaxWidth(),
+        // If the rider has an active trip already (e.g. they backgrounded
+        // the app mid-ride and came back), jump straight into the trip
+        // screen so they don't accidentally request a second one.
+        val activeTrip by repo.activeTrip().collectAsState(initial = null)
+        LaunchedEffect(activeTrip?.id) {
+            val t = activeTrip ?: return@LaunchedEffect
+            if (t.status != za.co.etaxi.app.domain.model.TripStatus.COMPLETED &&
+                t.status != za.co.etaxi.app.domain.model.TripStatus.CANCELLED
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "eTaxi",
-                        style = MaterialTheme.typography.displaySmall,
-                        color = EtaxiColors.Power,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Box(
+                navigator.push(RiderTripInProgressScreen(t.id))
+            }
+        }
+
+        // Re-estimate whenever pickup/dropoff change
+        LaunchedEffect(pickup, dropoff) {
+            val p = pickup; val d = dropoff
+            options = if (p != null && d != null) repo.estimate(p, d) else emptyList()
+            selectedOption = options.firstOrNull()
+        }
+
+        Scaffold(
+            containerColor = EtaxiColors.SlidesDeep,
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = padding.calculateBottomPadding()),
+            ) {
+                // Map fills the top ~55% of screen
+                EtaxiMap(
+                    state = MapState(
+                        camera = pickup?.location?.let {
+                            MapCamera(center = it, zoom = 14f)
+                        } ?: defaultJoburgCamera(),
+                        pickup = pickup?.location,
+                        dropoff = dropoff?.location,
+                    ),
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                // Top row: avatar + greeting
+                TopGreeting(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 16.dp),
+                    onAvatarClick = { navigator.push(ProfileScreen) },
+                )
+
+                // Bottom sheet content
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth(),
+                    color = EtaxiColors.Slides,
+                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                    tonalElevation = 8.dp,
+                ) {
+                    Column(
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(EtaxiColors.Power)
-                            .clickable { nav.push(ProfileScreen) },
-                        contentAlignment = Alignment.Center,
+                            .padding(horizontal = 20.dp, vertical = 16.dp)
+                            .verticalScroll(rememberScrollState()),
                     ) {
+                        // Grab handle
+                        Box(
+                            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(44.dp, 4.dp)
+                                    .background(EtaxiColors.SlidesSoft, RoundedCornerShape(2.dp)),
+                            )
+                        }
+
                         Text(
-                            initials,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = EtaxiColors.PowerInk,
+                            text = "Where to, ${MockData.riderUser.firstName}?",
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = EtaxiColors.Ink,
                         )
-                    }
-                }
+                        Spacer(Modifier.height(12.dp))
 
-                Spacer(Modifier.height(16.dp))
+                        // Pickup / dropoff inline inputs
+                        LocationInput(
+                            icon = Icons.Rounded.MyLocation,
+                            label = pickup?.label ?: "Pickup",
+                            value = pickup?.address ?: "Tap to set pickup",
+                            filled = pickup != null,
+                        ) {
+                            DestinationPickerBus.await { picked -> pickup = picked }
+                            navigator.push(DestinationSearchScreen(title = "Set pickup"))
+                        }
 
-                // Pickup address pill
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(CircleShape)
-                        .background(EtaxiColors.Ink900.copy(alpha = 0.92f))
-                        .border(1.dp, EtaxiColors.Ink500.copy(alpha = 0.6f), CircleShape)
-                        .clickable { nav.push(DestinationSearchScreen) }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        Modifier.size(10.dp).clip(CircleShape).background(EtaxiColors.Power),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text("\uD83D\uDCCD", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "29 Pear Street, Protea Glen",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = EtaxiColors.Bone,
-                        maxLines = 1,
-                    )
-                }
-            }
+                        Spacer(Modifier.height(8.dp))
 
-            // Floating "Hire" chip (Custom Hire shortcut)
-            Row(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 20.dp, bottom = 320.dp)
-                    .clip(CircleShape)
-                    .background(EtaxiColors.Hire)
-                    .clickable { nav.push(CustomHireScreen) }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Rounded.CalendarMonth,
-                    contentDescription = null,
-                    tint = EtaxiColors.Bone,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Hire", style = MaterialTheme.typography.titleMedium, color = EtaxiColors.Bone)
-            }
+                        LocationInput(
+                            icon = Icons.Rounded.LocationOn,
+                            label = dropoff?.label ?: "Destination",
+                            value = dropoff?.address ?: "Where are you going?",
+                            filled = dropoff != null,
+                            accent = true,
+                        ) {
+                            DestinationPickerBus.await { picked -> dropoff = picked }
+                            navigator.push(DestinationSearchScreen(title = "Where to?"))
+                        }
 
-            // Bottom sheet: greeting + search + quick chips
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                    .background(EtaxiColors.Ink900)
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 20.dp, bottom = 24.dp),
-            ) {
-                Box(
-                    Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .size(width = 44.dp, height = 4.dp)
-                        .clip(CircleShape)
-                        .background(EtaxiColors.Ink500),
-                )
-                Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(16.dp))
 
-                Text(
-                    "Good evening, $name \uD83D\uDC4B",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = EtaxiColors.BoneMuted,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Where to?",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = EtaxiColors.Bone,
-                )
+                        // Saved places quick chips
+                        Text(
+                            "Saved places",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = EtaxiColors.InkMuted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(MockData.savedPlaces) { place ->
+                                PlaceChip(place, onClick = { dropoff = place })
+                            }
+                        }
 
-                Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(20.dp))
 
-                // Search bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(EtaxiColors.Ink700)
-                        .clickable { nav.push(DestinationSearchScreen) }
-                        .padding(horizontal = 14.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Rounded.Search,
-                        contentDescription = null,
-                        tint = EtaxiColors.Power,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "Search destination…",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = EtaxiColors.BoneFaint,
-                    )
-                }
+                        // Vehicle class picker (only when dropoff set)
+                        AnimatedContent(
+                            targetState = options.isNotEmpty(),
+                            transitionSpec = {
+                                (fadeIn(tween(250)) + slideInVertically { 60 })
+                                    .togetherWith(fadeOut(tween(150)))
+                            },
+                            label = "options",
+                        ) { hasOptions ->
+                            if (hasOptions) {
+                                Column {
+                                    Text(
+                                        "Choose your ride",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = EtaxiColors.InkMuted,
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    options.forEach { opt ->
+                                        VehicleOptionRow(
+                                            option = opt,
+                                            selected = selectedOption == opt,
+                                            onClick = { selectedOption = opt },
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    Spacer(Modifier.height(8.dp))
+                                    requestError?.let {
+                                        Text(
+                                            it,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = EtaxiColors.Danger,
+                                            modifier = Modifier.padding(bottom = 8.dp),
+                                        )
+                                    }
+                                    EtaxiPrimaryButton(
+                                        text = if (requesting) "Requesting..." else "REQUEST RIDE",
+                                        enabled = selectedOption != null && !requesting,
+                                        onClick = {
+                                            val p = pickup ?: return@EtaxiPrimaryButton
+                                            val d = dropoff ?: return@EtaxiPrimaryButton
+                                            val o = selectedOption ?: return@EtaxiPrimaryButton
+                                            scope.launch {
+                                                requesting = true
+                                                requestError = null
+                                                try {
+                                                    val trip = repo.requestTrip(p, d, o)
+                                                    navigator.push(RiderTripInProgressScreen(trip.id))
+                                                } catch (t: Throwable) {
+                                                    requestError = t.message
+                                                        ?: "Could not request ride. Try again."
+                                                } finally {
+                                                    requesting = false
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            } else {
+                                Spacer(Modifier.height(0.dp))
+                            }
+                        }
 
-                Spacer(Modifier.height(14.dp))
-
-                // Quick destination chips
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    QuickChip(emoji = "\uD83C\uDFE0", label = "Home") {
-                        nav.push(DestinationSearchScreen)
-                    }
-                    QuickChip(emoji = "\uD83D\uDCBC", label = "Work") {
-                        nav.push(DestinationSearchScreen)
-                    }
-                    QuickChip(emoji = "\u2708\uFE0F", label = "Airport") {
-                        nav.push(DestinationSearchScreen)
-                    }
-                    QuickChip(emoji = "\uD83D\uDED2", label = "Shopping") {
-                        nav.push(DestinationSearchScreen)
+                        Spacer(Modifier.height(16.dp))
                     }
                 }
             }
@@ -223,18 +262,196 @@ object RiderHomeScreen : Screen {
 }
 
 @Composable
-private fun QuickChip(emoji: String, label: String, onClick: () -> Unit) {
+private fun TopGreeting(modifier: Modifier = Modifier, onAvatarClick: () -> Unit) {
     Row(
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(EtaxiColors.Ink700)
-            .border(1.dp, EtaxiColors.Ink500.copy(alpha = 0.5f), CircleShape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier = modifier
+            .padding(horizontal = 16.dp)
+            .fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(emoji, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.titleMedium, color = EtaxiColors.Bone)
+        Surface(
+            color = EtaxiColors.Slides.copy(alpha = 0.85f),
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.clip(RoundedCornerShape(24.dp)).clickable(onClick = onAvatarClick),
+            border = androidx.compose.foundation.BorderStroke(1.dp, EtaxiColors.SlidesEdge),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    Modifier.size(32.dp).background(EtaxiColors.Power, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        MockData.riderUser.initials,
+                        color = EtaxiColors.InkOnPower,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Black,
+                    )
+                }
+                Column {
+                    Text("Hi, ${MockData.riderUser.firstName}",
+                        style = MaterialTheme.typography.labelLarge, color = EtaxiColors.Ink)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Icon(Icons.Rounded.Star, null, tint = EtaxiColors.Power, modifier = Modifier.size(10.dp))
+                        Text(
+                            "${MockData.riderUser.rating}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = EtaxiColors.InkMuted,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
+
+@Composable
+private fun LocationInput(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    filled: Boolean,
+    accent: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(60.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
+        color = EtaxiColors.SlidesRaised,
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (accent && !filled) EtaxiColors.Power else EtaxiColors.SlidesEdge,
+        ),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp).fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier.size(32.dp).background(
+                    if (accent) EtaxiColors.Power.copy(alpha = 0.15f) else EtaxiColors.Slides,
+                    CircleShape,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, null, tint = if (accent) EtaxiColors.Power else EtaxiColors.Ink, modifier = Modifier.size(18.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = EtaxiColors.InkMuted)
+                Text(
+                    value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (filled) EtaxiColors.Ink else EtaxiColors.InkFaint,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaceChip(place: Place, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.clip(RoundedCornerShape(20.dp)).clickable(onClick = onClick),
+        color = EtaxiColors.SlidesRaised,
+        shape = RoundedCornerShape(20.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, EtaxiColors.SlidesEdge),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = when (place.label) {
+                    "Home" -> Icons.Rounded.Home
+                    "Work" -> Icons.Rounded.Work
+                    "Airport" -> Icons.Rounded.Flight
+                    else -> Icons.Rounded.Place
+                },
+                contentDescription = null,
+                tint = EtaxiColors.Power,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(place.label, style = MaterialTheme.typography.labelMedium, color = EtaxiColors.Ink)
+        }
+    }
+}
+
+@Composable
+private fun VehicleOptionRow(
+    option: VehicleClassOption,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val border = if (selected) EtaxiColors.Power else EtaxiColors.SlidesEdge
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        color = if (selected) EtaxiColors.Slides else EtaxiColors.SlidesRaised,
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(if (selected) 2.dp else 1.dp, border),
+    ) {
+        Row(
+            Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                Modifier.size(48.dp).background(
+                    if (selected) EtaxiColors.Power.copy(alpha = 0.15f) else EtaxiColors.Slides,
+                    RoundedCornerShape(12.dp),
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    when (option.vehicleClass) {
+                        VehicleClass.STANDARD -> Icons.Rounded.DirectionsCar
+                        VehicleClass.XL -> Icons.Rounded.AirportShuttle
+                        VehicleClass.LUX -> Icons.Rounded.Star
+                    },
+                    null,
+                    tint = EtaxiColors.Power,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    option.vehicleClass.label,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = EtaxiColors.Ink,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "${option.vehicleClass.maxSeats} seats · ${option.vehicleClass.eta} away",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = EtaxiColors.InkMuted,
+                )
+            }
+            Text(
+                formatRand(option.priceCents),
+                style = MaterialTheme.typography.titleMedium,
+                color = EtaxiColors.Ink,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+// LazyRow DSL helper
+private fun <T> androidx.compose.foundation.lazy.LazyListScope.items(
+    items: List<T>,
+    content: @Composable (T) -> Unit,
+) = items(items.size) { content(items[it]) }
+

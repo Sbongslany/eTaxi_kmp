@@ -4,14 +4,14 @@ import android.app.Application
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 import za.co.etaxi.app.core.di.initKoin
+import za.co.etaxi.app.core.location.AndroidLocationStreamer
+import za.co.etaxi.app.core.location.LocationStreamer
 import za.co.etaxi.app.core.network.TokenManager
 
-// Android Application entry point. Registers the Context so Koin can
-// construct TokenManager (which needs Context for
-// EncryptedSharedPreferences). Also calls initKoin which loads the
-// network + repository modules.
+// Android Application entry point. Registers Context-dependent
+// dependencies (TokenManager, LocationStreamer) and bootstraps Koin.
 //
-// IMPORTANT: Make sure AndroidManifest.xml references this class:
+// AndroidManifest.xml must reference this class:
 //   <application android:name=".EtaxiApp" ... >
 class EtaxiApp : Application() {
     override fun onCreate() {
@@ -21,6 +21,7 @@ class EtaxiApp : Application() {
             modules(
                 module {
                     single { TokenManager(get()) }
+                    single<LocationStreamer> { AndroidLocationStreamer(get()) }
                 }
             )
         }
