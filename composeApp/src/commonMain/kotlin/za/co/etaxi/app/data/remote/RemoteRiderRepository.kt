@@ -202,8 +202,23 @@ class RemoteRiderRepository(
     private suspend fun onWsEvent(event: TripEvent) {
         when (event) {
             is TripEvent.StatusUpdate -> {
-                // Re-fetch full trip details because the event payload
-                // alone doesn't include driver/vehicle info.
+                // 1. Optimistic update from the WS payload — status
+                //    changes are visible instantly even before the
+                //    refresh round-trip completes.
+                val active = _activeTrip.value
+                if (active != null && active.id == event.tripId) {
+                    val parsedStatus = runCatching {
+                        za.co.etaxi.app.domain.model.TripStatus.valueOf(event.status)
+                    }.getOrNull()
+                    if (parsedStatus != null) {
+                        _activeTrip.value = active.copy(
+                            status = parsedStatus,
+                            fareCents = event.finalFareCents ?: active.fareCents,
+                        )
+                    }
+                }
+                // 2. Then refresh in the background to pick up nested
+                //    fields (driver, stops) we don't get on the payload.
                 refreshActive(event.tripId)
             }
             is TripEvent.DriverLocation -> {

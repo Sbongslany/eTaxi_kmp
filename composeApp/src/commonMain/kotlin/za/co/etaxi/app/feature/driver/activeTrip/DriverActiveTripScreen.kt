@@ -105,7 +105,8 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
             if (s == TripStatus.COMPLETED && !navigated) {
                 val t = trip ?: return@LaunchedEffect
                 navigated = true
-                delay(800)
+                // No artificial delay — navigate immediately so the
+                // user doesn't think the End trip button is broken.
                 nav.replace(
                     RateRiderScreen(
                         tripId = t.id,

@@ -72,9 +72,17 @@ object DriverHomeScreen : Screen {
             myLocation = runCatching { locationStreamer.lastKnownLocation() }.getOrNull()
         }
 
-        // Push to active trip screen once accepted
-        LaunchedEffect(active?.id) {
-            if (active != null) nav.push(DriverActiveTripScreen(active!!.id))
+        // Push to active trip screen when there's a live trip. Skip
+        // if the trip is already terminal (COMPLETED / CANCELLED) —
+        // otherwise after rating the driver, _activeTrip lingers
+        // until the rate screen clears it, and we'd pop straight back
+        // to the trip screen with a finished trip.
+        LaunchedEffect(active?.id, active?.status) {
+            val a = active ?: return@LaunchedEffect
+            if (a.status == za.co.etaxi.app.domain.model.TripStatus.COMPLETED ||
+                a.status == za.co.etaxi.app.domain.model.TripStatus.CANCELLED
+            ) return@LaunchedEffect
+            nav.push(DriverActiveTripScreen(a.id))
         }
 
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {

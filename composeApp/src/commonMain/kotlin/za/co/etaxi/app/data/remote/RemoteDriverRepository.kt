@@ -278,6 +278,12 @@ class RemoteDriverRepository(
     }
 
     override suspend fun markArriving(tripId: String) {
+        // Optimistic flip — UI feels instant. If HTTP fails the WS
+        // event flow eventually corrects us.
+        val current = _activeTrip.value
+        if (current != null && current.id == tripId) {
+            _activeTrip.value = current.copy(status = TripStatus.DRIVER_ARRIVING)
+        }
         val res = tripApi.arriving(tripId)
         if (res is ApiResult.Success<*>) {
             _activeTrip.value = (res.value as TripDto).toTripDomain()
@@ -285,6 +291,10 @@ class RemoteDriverRepository(
     }
 
     override suspend fun markArrived(tripId: String) {
+        val current = _activeTrip.value
+        if (current != null && current.id == tripId) {
+            _activeTrip.value = current.copy(status = TripStatus.ARRIVED)
+        }
         val res = tripApi.arrived(tripId)
         if (res is ApiResult.Success<*>) {
             _activeTrip.value = (res.value as TripDto).toTripDomain()
@@ -292,6 +302,10 @@ class RemoteDriverRepository(
     }
 
     override suspend fun startTrip(tripId: String) {
+        val current = _activeTrip.value
+        if (current != null && current.id == tripId) {
+            _activeTrip.value = current.copy(status = TripStatus.IN_PROGRESS)
+        }
         val res = tripApi.start(tripId)
         if (res is ApiResult.Success<*>) {
             _activeTrip.value = (res.value as TripDto).toTripDomain()
@@ -301,12 +315,16 @@ class RemoteDriverRepository(
     override suspend fun endTrip(tripId: String) {
         val res = tripApi.end(tripId)
         if (res !is ApiResult.Success<*>) return
-        // The end response is wrapped { trip, fare } and would not
-        // deserialize as a bare TripDto. Refresh via GET to get the
-        // fully-hydrated trip with the COMPLETED status. If the
-        // refresh fails, leave the existing state alone — the
-        // backend already moved to COMPLETED, so the next WS
-        // TRIP_STATUS_UPDATE event will sync us.
+        // Optimistic: flip status to COMPLETED locally the instant the
+        // HTTP call returns 200. The screen's LaunchedEffect then fires
+        // navigation to RateRiderScreen without waiting for the GET
+        // refresh round-trip.
+        val current = _activeTrip.value
+        if (current != null && current.id == tripId) {
+            _activeTrip.value = current.copy(status = TripStatus.COMPLETED)
+        }
+        // Refresh from server to populate finalFareCents and any other
+        // fields the end response computes.
         val refreshed = tripApi.get(tripId)
         if (refreshed is ApiResult.Success<*>) {
             _activeTrip.value = (refreshed.value as TripDto).toTripDomain()
@@ -406,22 +424,28 @@ class RemoteDriverRepository(
                 )
             }
             is TripEvent.StatusUpdate -> {
-                // If this is our active trip, refresh from the server
-                // for the freshest data.
                 val active = _activeTrip.value
                 if (active != null && active.id == event.tripId) {
+                    // 1. Optimistic update from the payload's status
+                    //    field (if present) so transitions feel snappy.
+                    //    Empty status means "something changed, please
+                    //    refresh" (e.g. addStop fires a status update
+                    //    with no status field, just stopAdded).
+                    val parsedStatus = runCatching {
+                        za.co.etaxi.app.domain.model.TripStatus.valueOf(event.status)
+                    }.getOrNull()
+                    if (parsedStatus != null) {
+                        _activeTrip.value = active.copy(
+                            status = parsedStatus,
+                            fareCents = event.finalFareCents ?: active.fareCents,
+                        )
+                    }
+                    // 2. Always refresh from the server to pick up
+                    //    nested fields (rider, stops, etc) that the
+                    //    WS payload doesn't include.
                     val res = tripApi.get(event.tripId)
                     if (res is ApiResult.Success<*>) {
-                        val trip = (res.value as TripDto).toTripDomain()
-                        if (trip.status == TripStatus.COMPLETED ||
-                            trip.status == TripStatus.CANCELLED
-                        ) {
-                            // Keep the trip set so the rating screen has
-                            // context, but the UI uses status to navigate.
-                            _activeTrip.value = trip
-                        } else {
-                            _activeTrip.value = trip
-                        }
+                        _activeTrip.value = (res.value as TripDto).toTripDomain()
                     }
                 }
             }

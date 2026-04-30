@@ -141,7 +141,13 @@ class WsClient(
 
             "TRIP_STATUS_UPDATE" -> TripEvent.StatusUpdate(
                 tripId = tripId,
-                status = payload.status ?: return,
+                // Backend sometimes publishes TRIP_STATUS_UPDATE without
+                // a `status` field (e.g. addStop fires this event with
+                // only stopAdded + newEstimate). Use empty string as a
+                // sentinel meaning "something changed, please refresh".
+                // The receivers in the repos will treat empty string as
+                // a refresh trigger.
+                status = payload.status ?: "",
                 driverId = payload.driverId,
                 finalFareCents = payload.finalFareCents,
             )
