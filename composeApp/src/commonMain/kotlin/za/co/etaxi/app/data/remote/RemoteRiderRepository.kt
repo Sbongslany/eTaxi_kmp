@@ -171,14 +171,16 @@ class RemoteRiderRepository(
                 address = stop.address,
             )
         )
-        return if (res is ApiResult.Success<*>) {
-            // Backend's addStop returns { trip, stop, fare } but we
-            // accept it as TripDto-shaped fallback. Re-fetch to be safe.
-            refreshActive(tripId) ?: (res.value as TripDto).toDomain()
-        } else {
+        if (res !is ApiResult.Success<*>) {
             val failure = res as ApiResult.Failure
             throw Exception("Add stop failed: ${failure.message}")
         }
+        // Backend returns { trip, stop, fare }. Pull the trip out of
+        // the wrapper, but always re-fetch via GET /trips/:id so we
+        // also get the fully-hydrated nested driver/rider/stops.
+        val response = res.value as za.co.etaxi.app.core.network.AddStopResponseDto
+        val trip = refreshActive(tripId) ?: response.trip.toDomain()
+        return trip
     }
 
     override suspend fun rateDriver(submission: RatingSubmission) {

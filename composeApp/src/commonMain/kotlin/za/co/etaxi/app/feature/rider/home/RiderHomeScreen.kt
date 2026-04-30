@@ -59,14 +59,39 @@ object RiderHomeScreen : Screen {
     override fun Content() {
         val navigator = LocalNavigator.currentOrThrow
         val repo: RiderRepository = koinInject()
+        val locationStreamer: za.co.etaxi.app.core.location.LocationStreamer = koinInject()
         val scope = remember { CoroutineScope(Dispatchers.Default) }
 
-        var pickup by remember { mutableStateOf<Place?>(MockData.savedPlaces[0]) }
+        // Pickup starts at the user's first saved place ("Home" / Sandton)
+        // so the screen has a usable pickup even before GPS resolves.
+        // If a fresh GPS fix arrives we upgrade pickup to the real
+        // current location (provided the user hasn't manually picked
+        // something else in the meantime).
+        var pickup by remember { mutableStateOf<Place?>(MockData.savedPlaces.firstOrNull()) }
         var dropoff by remember { mutableStateOf<Place?>(null) }
         var options by remember { mutableStateOf<List<VehicleClassOption>>(emptyList()) }
         var selectedOption by remember { mutableStateOf<VehicleClassOption?>(null) }
         var requesting by remember { mutableStateOf(false) }
         var requestError by remember { mutableStateOf<String?>(null) }
+        // Track whether the current pickup came from GPS so we don't
+        // overwrite a manual pick if a late GPS fix shows up.
+        var pickupFromGps by remember { mutableStateOf(false) }
+
+        // One-shot GPS fix on mount. If it lands AND the user hasn't
+        // already picked a destination or chosen a different pickup,
+        // upgrade pickup to "Current location". If GPS fails we keep
+        // the saved-place default so the screen still works.
+        LaunchedEffect(Unit) {
+            val fix = runCatching { locationStreamer.lastKnownLocation() }.getOrNull()
+            if (fix != null && (pickupFromGps || pickup?.label == "Home")) {
+                pickup = Place(
+                    label = "Current location",
+                    address = "My location",
+                    location = fix,
+                )
+                pickupFromGps = true
+            }
+        }
 
         // If the rider has an active trip already (e.g. they backgrounded
         // the app mid-ride and came back), jump straight into the trip

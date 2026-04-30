@@ -144,9 +144,14 @@ fun AddStopSheet(
                                 if (tripId == null) return@clickable
                                 scope.launch {
                                     loading = true
-                                    repo.addStop(tripId, place)
-                                    loading = false
-                                    onAdded(place)
+                                    try {
+                                        repo.addStop(tripId, place)
+                                        onAdded(place)
+                                    } catch (t: Throwable) {
+                                        println("[AddStopSheet] addStop failed: ${t.message}")
+                                    } finally {
+                                        loading = false
+                                    }
                                 }
                             }
                             .padding(vertical = 10.dp, horizontal = 4.dp),

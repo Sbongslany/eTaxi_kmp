@@ -135,6 +135,18 @@ data class TripStopDto(
     val address: String,
 )
 
+// Backend's POST /trips/:id/stops returns { trip, stop, fare } not a
+// bare TripDto. We define a wrapper so the deserializer matches the
+// real wire format. Without this, the request "succeeds" on the
+// network layer but parsing the response fails or yields a TripDto
+// with all-default fields, which then crashes downstream consumers.
+@Serializable
+data class AddStopResponseDto(
+    val trip: TripDto,
+    val stop: TripStopDto? = null,
+    val fare: TripEstimateDto? = null,
+)
+
 // Backend wraps single-trip responses in { trip, estimate } on request,
 // but for accept/get/list etc. it returns the trip directly. To keep the
 // API surface small we accept either shape via two response wrappers.

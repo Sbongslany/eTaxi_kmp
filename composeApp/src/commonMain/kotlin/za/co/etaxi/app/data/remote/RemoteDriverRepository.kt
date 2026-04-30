@@ -300,15 +300,16 @@ class RemoteDriverRepository(
 
     override suspend fun endTrip(tripId: String) {
         val res = tripApi.end(tripId)
-        if (res is ApiResult.Success<*>) {
-            // End response is { trip, fare } but we accept TripDto-shape
-            // fallback; refresh from GET /trips/:id to be safe.
-            val refreshed = tripApi.get(tripId)
-            if (refreshed is ApiResult.Success<*>) {
-                _activeTrip.value = (refreshed.value as TripDto).toTripDomain()
-            } else {
-                _activeTrip.value = (res.value as TripDto).toTripDomain()
-            }
+        if (res !is ApiResult.Success<*>) return
+        // The end response is wrapped { trip, fare } and would not
+        // deserialize as a bare TripDto. Refresh via GET to get the
+        // fully-hydrated trip with the COMPLETED status. If the
+        // refresh fails, leave the existing state alone — the
+        // backend already moved to COMPLETED, so the next WS
+        // TRIP_STATUS_UPDATE event will sync us.
+        val refreshed = tripApi.get(tripId)
+        if (refreshed is ApiResult.Success<*>) {
+            _activeTrip.value = (refreshed.value as TripDto).toTripDomain()
         }
     }
 
@@ -328,19 +329,21 @@ class RemoteDriverRepository(
                 address = stop.address,
             )
         )
-        return if (res is ApiResult.Success<*>) {
-            val refreshed = tripApi.get(tripId)
-            val trip = if (refreshed is ApiResult.Success<*>) {
-                (refreshed.value as TripDto).toTripDomain()
-            } else {
-                (res.value as TripDto).toTripDomain()
-            }
-            _activeTrip.value = trip
-            trip
-        } else {
+        if (res !is ApiResult.Success<*>) {
             val failure = res as ApiResult.Failure
             throw Exception("Add stop failed: ${failure.message}")
         }
+        // Backend returns { trip, stop, fare }. Refresh from GET so we
+        // get the fully-hydrated nested rider/driver objects.
+        val refreshed = tripApi.get(tripId)
+        val trip = if (refreshed is ApiResult.Success<*>) {
+            (refreshed.value as TripDto).toTripDomain()
+        } else {
+            val response = res.value as za.co.etaxi.app.core.network.AddStopResponseDto
+            response.trip.toTripDomain()
+        }
+        _activeTrip.value = trip
+        return trip
     }
 
     override suspend fun history(): List<Trip> = emptyList()

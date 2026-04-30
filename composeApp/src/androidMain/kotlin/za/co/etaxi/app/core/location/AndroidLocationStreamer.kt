@@ -69,7 +69,10 @@ class AndroidLocationStreamer(
 
     @SuppressLint("MissingPermission")
     override suspend fun lastKnownLocation(): LatLng? {
-        if (!hasPermission()) return null
+        if (!hasPermission()) {
+            println("[LocationStreamer] lastKnownLocation: NO PERMISSION")
+            return null
+        }
         // Try the cached lastLocation first — it's instant if available.
         val cached: LatLng? = try {
             suspendCancellableCoroutine { cont ->
@@ -82,10 +85,14 @@ class AndroidLocationStreamer(
         } catch (_: Throwable) {
             null
         }
-        if (cached != null) return cached
+        if (cached != null) {
+            println("[LocationStreamer] lastKnownLocation: cached=$cached")
+            return cached
+        }
 
         // Cache miss — request a fresh fix with a 5-second timeout.
-        return withTimeoutOrNull(5_000L) {
+        println("[LocationStreamer] lastKnownLocation: cache miss, requesting fresh fix")
+        val fresh = withTimeoutOrNull(5_000L) {
             suspendCancellableCoroutine { cont ->
                 try {
                     client.getCurrentLocation(
@@ -103,6 +110,8 @@ class AndroidLocationStreamer(
                 }
             }
         }
+        println("[LocationStreamer] lastKnownLocation: fresh=$fresh")
+        return fresh
     }
 
     private fun hasPermission(): Boolean =

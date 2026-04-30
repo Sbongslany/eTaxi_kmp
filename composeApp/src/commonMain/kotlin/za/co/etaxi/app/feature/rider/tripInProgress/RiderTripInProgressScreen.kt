@@ -60,17 +60,6 @@ class RiderTripInProgressScreen(private val tripId: String) : Screen {
         var celebrationDismissed by remember { mutableStateOf(false) }
 
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            // Build the route polyline: pickup -> stops -> dropoff
-            val routePoints = remember(trip?.id, trip?.stops?.size) {
-                val t = trip
-                if (t == null) emptyList()
-                else buildList {
-                    add(t.pickup.location)
-                    t.stops.forEach { add(it.location) }
-                    add(t.dropoff.location)
-                }
-            }
-
             // Real map. Camera follows driver during IN_PROGRESS, otherwise
             // stays centered on the pickup.
             EtaxiMap(
@@ -85,7 +74,6 @@ class RiderTripInProgressScreen(private val tripId: String) : Screen {
                     pickup = trip?.pickup?.location,
                     dropoff = trip?.dropoff?.location,
                     driver = if (trip?.status != TripStatus.REQUESTED) driverLoc else null,
-                    route = routePoints,
                 ),
                 modifier = Modifier.fillMaxSize(),
             )
@@ -302,8 +290,10 @@ private fun DriverSheet(
             StatColumn("Fare", formatRand(trip.fareCents))
         }
 
-        // Add-stop chip (only during IN_PROGRESS or DRIVER_ARRIVING)
-        if (trip.status in listOf(TripStatus.IN_PROGRESS, TripStatus.DRIVER_ARRIVING, TripStatus.ARRIVED)) {
+        // Add-stop chip — only during ACCEPTED (driver heading to pickup)
+        // or IN_PROGRESS. Backend rejects stops in DRIVER_ARRIVING and
+        // ARRIVED with a 409 ConflictError.
+        if (trip.status in listOf(TripStatus.ACCEPTED, TripStatus.IN_PROGRESS)) {
             Spacer(Modifier.height(16.dp))
             Row(
                 modifier = Modifier

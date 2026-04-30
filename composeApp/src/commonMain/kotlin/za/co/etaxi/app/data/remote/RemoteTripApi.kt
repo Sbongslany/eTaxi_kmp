@@ -5,6 +5,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import za.co.etaxi.app.core.network.AddStopBody
+import za.co.etaxi.app.core.network.AddStopResponseDto
 import za.co.etaxi.app.core.network.ApiResult
 import za.co.etaxi.app.core.network.CancelTripBody
 import za.co.etaxi.app.core.network.EtaxiApi
@@ -54,7 +55,7 @@ class RemoteTripApi(
             }
         }
 
-    suspend fun addStop(tripId: String, body: AddStopBody): ApiResult<TripDto> =
+    suspend fun addStop(tripId: String, body: AddStopBody): ApiResult<AddStopResponseDto> =
         EtaxiApi.wrap {
             http.post("trips/$tripId/stops") {
                 authorized(tokens)

@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import za.co.etaxi.app.core.components.MockMapCanvas
 import za.co.etaxi.app.core.map.EtaxiMap
+import za.co.etaxi.app.core.map.MapCamera
 import za.co.etaxi.app.core.map.MapState
 import za.co.etaxi.app.core.map.defaultJoburgCamera
 import za.co.etaxi.app.core.theme.EtaxiColors
@@ -51,6 +52,7 @@ object DriverHomeScreen : Screen {
     override fun Content() {
         val nav = LocalNavigator.currentOrThrow
         val repo: DriverRepository = koinInject()
+        val locationStreamer: za.co.etaxi.app.core.location.LocationStreamer = koinInject()
         val scope = rememberCoroutineScope()
         val online by repo.isOnline.collectAsState(initial = false)
         val incoming by repo.incomingRequests().collectAsState(initial = null)
@@ -60,6 +62,16 @@ object DriverHomeScreen : Screen {
         )
         val canGoOnline = onboarding == DriverOnboardingState.APPROVED
 
+        var myLocation by remember {
+            mutableStateOf<za.co.etaxi.app.domain.model.LatLng?>(null)
+        }
+        // One-shot GPS read so the map opens centred on the driver's
+        // actual position. If denied or unavailable, falls back to the
+        // default Joburg camera.
+        LaunchedEffect(Unit) {
+            myLocation = runCatching { locationStreamer.lastKnownLocation() }.getOrNull()
+        }
+
         // Push to active trip screen once accepted
         LaunchedEffect(active?.id) {
             if (active != null) nav.push(DriverActiveTripScreen(active!!.id))
@@ -67,7 +79,12 @@ object DriverHomeScreen : Screen {
 
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             EtaxiMap(
-                state = MapState(camera = defaultJoburgCamera()),
+                state = MapState(
+                    camera = myLocation
+                        ?.let { MapCamera(center = it, zoom = 15f) }
+                        ?: defaultJoburgCamera(),
+                    driver = myLocation,
+                ),
                 modifier = Modifier.fillMaxSize(),
             )
 

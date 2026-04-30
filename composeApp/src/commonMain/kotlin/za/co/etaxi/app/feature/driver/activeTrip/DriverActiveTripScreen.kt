@@ -71,7 +71,6 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
         val trip by repo.activeTrip().collectAsState(initial = null)
 
         var driverPos by remember { mutableStateOf<LatLng?>(null) }
-        var showAddStop by remember { mutableStateOf(false) }
         var cancelling by remember { mutableStateOf(false) }
 
         // Start the location streamer when the screen mounts and stop on
@@ -97,10 +96,15 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
             }
         }
 
-        // On completion, navigate to rate-rider.
+        // On completion, navigate to rate-rider. Tracked separately
+        // so the same trip ID can't fire the navigation twice (e.g. a
+        // duplicate WS event). On cancellation, just pop back to home.
+        var navigated by remember { mutableStateOf(false) }
         LaunchedEffect(trip?.status) {
-            if (trip?.status == TripStatus.COMPLETED) {
+            val s = trip?.status ?: return@LaunchedEffect
+            if (s == TripStatus.COMPLETED && !navigated) {
                 val t = trip ?: return@LaunchedEffect
+                navigated = true
                 delay(800)
                 nav.replace(
                     RateRiderScreen(
@@ -109,7 +113,8 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                         fareLabel = formatRand((t.fareCents * 0.8).toInt()),
                     ),
                 )
-            } else if (trip == null) {
+            } else if (s == TripStatus.CANCELLED && !navigated) {
+                navigated = true
                 nav.pop()
             }
         }
@@ -176,9 +181,6 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                             }
                         }
                     },
-                    onAddStop = { showAddStop = true },
-                    canAddStop = t.status == TripStatus.IN_PROGRESS ||
-                        t.status == TripStatus.ACCEPTED,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth(),
@@ -194,14 +196,6 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                 }
             }
         }
-
-        // Add-stop overlay
-        DriverAddStopSheet(
-            visible = showAddStop,
-            tripId = trip?.id,
-            onDismiss = { showAddStop = false },
-            onAdded = { showAddStop = false },
-        )
     }
 }
 
@@ -317,8 +311,6 @@ private fun RiderCard(
 private fun ActionSheet(
     trip: Trip,
     onPrimary: () -> Unit,
-    onAddStop: () -> Unit,
-    canAddStop: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -353,39 +345,16 @@ private fun ActionSheet(
         )
         Spacer(Modifier.height(20.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Add stop pill (only when canAddStop)
-            if (canAddStop) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(EtaxiColors.SlidesRaised)
-                        .border(1.dp, EtaxiColors.SlidesEdge, RoundedCornerShape(18.dp))
-                        .clickable(onClick = onAddStop)
-                        .padding(horizontal = 18.dp, vertical = 16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Add, null, tint = EtaxiColors.Ink, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "Add stop",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = EtaxiColors.Ink,
-                        )
-                    }
-                }
-            }
-            // Primary action button
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(60.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(EtaxiColors.Power)
-                    .clickable { onPrimary() },
-                contentAlignment = Alignment.Center,
-            ) {
+        // Primary action button only — driver doesn't add stops, only riders do.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(60.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(EtaxiColors.Power)
+                .clickable { onPrimary() },
+            contentAlignment = Alignment.Center,
+        ) {
                 Text(
                     when (trip.status) {
                         TripStatus.ACCEPTED        -> "I'm on my way"
@@ -398,6 +367,5 @@ private fun ActionSheet(
                     color = EtaxiColors.InkOnPower,
                 )
             }
-        }
     }
 }
