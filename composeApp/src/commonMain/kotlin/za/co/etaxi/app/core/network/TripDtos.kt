@@ -35,6 +35,12 @@ data class AddStopBody(
     val address: String,
 )
 
+// PATCH /trips/:id/stops/reorder body
+@Serializable
+data class ReorderStopsBody(
+    val stopIds: List<String>,
+)
+
 // POST /trips/:id/location body (driver pings)
 @Serializable
 data class LocationPingBody(

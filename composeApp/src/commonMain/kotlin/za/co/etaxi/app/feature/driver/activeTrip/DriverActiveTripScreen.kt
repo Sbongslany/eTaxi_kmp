@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -96,26 +98,17 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
             }
         }
 
-        // On completion, navigate to rate-rider. Tracked separately
-        // so the same trip ID can't fire the navigation twice (e.g. a
-        // duplicate WS event). On cancellation, just pop back to home.
+        // Status observer — only handles cancellation. End-trip nav is
+        // done directly in the click handler so it can't be cancelled
+        // by status-flow churn.
         var navigated by remember { mutableStateOf(false) }
         LaunchedEffect(trip?.status) {
             val s = trip?.status ?: return@LaunchedEffect
-            if (s == TripStatus.COMPLETED && !navigated) {
-                val t = trip ?: return@LaunchedEffect
+            println("[DriverActiveTrip] status=$s navigated=$navigated")
+            if (s == TripStatus.CANCELLED && !navigated) {
                 navigated = true
-                // No artificial delay — navigate immediately so the
-                // user doesn't think the End trip button is broken.
-                nav.replace(
-                    RateRiderScreen(
-                        tripId = t.id,
-                        riderName = t.rider?.name ?: "Rider",
-                        fareLabel = formatRand((t.fareCents * 0.8).toInt()),
-                    ),
-                )
-            } else if (s == TripStatus.CANCELLED && !navigated) {
-                navigated = true
+                println("[DriverActiveTrip] trip cancelled, popping")
+                streamer.stop()
                 nav.pop()
             }
         }
@@ -164,7 +157,8 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                     cancelling = cancelling,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 56.dp, start = 16.dp, end = 16.dp)
+                        .statusBarsPadding()
+                        .padding(top = 8.dp, start = 16.dp, end = 16.dp)
                         .fillMaxWidth(),
                 )
 
@@ -177,14 +171,33 @@ class DriverActiveTripScreen(private val tripId: String) : Screen {
                                 TripStatus.ACCEPTED        -> repo.markArriving(t.id)
                                 TripStatus.DRIVER_ARRIVING -> repo.markArrived(t.id)
                                 TripStatus.ARRIVED         -> repo.startTrip(t.id)
-                                TripStatus.IN_PROGRESS     -> repo.endTrip(t.id)
+                                TripStatus.IN_PROGRESS     -> {
+                                    // End trip — call repo and navigate
+                                    // directly from the click handler.
+                                    // Don't depend on LaunchedEffect to
+                                    // observe the COMPLETED state because
+                                    // status-flow churn (WS refresh,
+                                    // optimistic updates) can cancel the
+                                    // observer's coroutine before it
+                                    // navigates.
+                                    runCatching { repo.endTrip(t.id) }
+                                    streamer.stop()
+                                    nav.replaceAll(
+                                        RateRiderScreen(
+                                            tripId = t.id,
+                                            riderName = t.rider?.name ?: "Rider",
+                                            fareLabel = formatRand((t.fareCents * 0.8).toInt()),
+                                        ),
+                                    )
+                                }
                                 else                       -> nav.pop()
                             }
                         }
                     },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .navigationBarsPadding(),
                 )
             }
 

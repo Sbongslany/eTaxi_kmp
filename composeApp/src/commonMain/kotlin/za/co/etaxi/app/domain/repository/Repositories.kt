@@ -58,6 +58,10 @@ interface RiderRepository {
     // New — add-stop mid-trip
     suspend fun addStop(tripId: String, stop: Place): Trip
 
+    // New — reorder stops mid-trip. stopIds must be a permutation of
+    // the current trip.stops IDs. Backend recalculates fare.
+    suspend fun reorderStops(tripId: String, stopIds: List<String>): Trip
+
     // New — rate the driver after the trip completes
     suspend fun rateDriver(submission: RatingSubmission)
 }

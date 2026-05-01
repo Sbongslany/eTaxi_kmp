@@ -82,13 +82,23 @@ class MockRiderRepository : RiderRepository {
     override suspend fun addStop(tripId: String, stop: Place): Trip {
         delay(250)
         val current = _activeTrip.value ?: throw IllegalStateException("No active trip")
-        val newStops = current.stops + stop
+        val newStops = current.stops + stop.copy(id = "mock-stop-${current.stops.size + 1}")
         // Fake re-estimate: bump fare by R15 per stop and add 4 min duration
         val updated = current.copy(
             stops = newStops,
             fareCents = current.fareCents + 1_500,
             durationMinutes = current.durationMinutes + 4,
         )
+        _activeTrip.value = updated
+        return updated
+    }
+
+    override suspend fun reorderStops(tripId: String, stopIds: List<String>): Trip {
+        delay(150)
+        val current = _activeTrip.value ?: throw IllegalStateException("No active trip")
+        val byId = current.stops.associateBy { it.id }
+        val reordered = stopIds.mapNotNull { byId[it] }
+        val updated = current.copy(stops = reordered)
         _activeTrip.value = updated
         return updated
     }

@@ -8,6 +8,10 @@ data class Place(
     val label: String,      // e.g. "Home"
     val address: String,    // e.g. "12 Helen Rd, Sandton"
     val location: LatLng,
+    // Optional. Populated when this Place came from the backend as a
+    // TripStop row — the rider needs the ID to call reorderStops().
+    // Null for saved places, popular places, and pickup/dropoff.
+    val id: String? = null,
 )
 
 enum class VehicleClass(val label: String, val maxSeats: Int, val eta: String) {

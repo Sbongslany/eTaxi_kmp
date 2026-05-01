@@ -2,6 +2,7 @@ package za.co.etaxi.app.data.remote
 
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import za.co.etaxi.app.core.network.AddStopBody
@@ -11,6 +12,7 @@ import za.co.etaxi.app.core.network.CancelTripBody
 import za.co.etaxi.app.core.network.EtaxiApi
 import za.co.etaxi.app.core.network.LocationPingBody
 import za.co.etaxi.app.core.network.RatingBody
+import za.co.etaxi.app.core.network.ReorderStopsBody
 import za.co.etaxi.app.core.network.RequestStandardTripBody
 import za.co.etaxi.app.core.network.RequestTripResponse
 import za.co.etaxi.app.core.network.TokenManager
@@ -58,6 +60,18 @@ class RemoteTripApi(
     suspend fun addStop(tripId: String, body: AddStopBody): ApiResult<AddStopResponseDto> =
         EtaxiApi.wrap {
             http.post("trips/$tripId/stops") {
+                authorized(tokens)
+                setBody(body)
+            }
+        }
+
+    // PATCH /trips/:id/stops/reorder — rider can reorder stops mid-trip.
+    // Body: { stopIds: [uuid, uuid, ...] } in the desired order.
+    // Backend recalculates fare and broadcasts TRIP_STATUS_UPDATE to
+    // both rider and driver channels.
+    suspend fun reorderStops(tripId: String, body: ReorderStopsBody): ApiResult<AddStopResponseDto> =
+        EtaxiApi.wrap {
+            http.patch("trips/$tripId/stops/reorder") {
                 authorized(tokens)
                 setBody(body)
             }

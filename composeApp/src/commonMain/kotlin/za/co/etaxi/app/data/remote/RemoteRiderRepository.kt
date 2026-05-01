@@ -183,6 +183,20 @@ class RemoteRiderRepository(
         return trip
     }
 
+    override suspend fun reorderStops(tripId: String, stopIds: List<String>): Trip {
+        val res = tripApi.reorderStops(
+            tripId,
+            za.co.etaxi.app.core.network.ReorderStopsBody(stopIds = stopIds),
+        )
+        if (res !is ApiResult.Success<*>) {
+            val failure = res as ApiResult.Failure
+            throw Exception("Reorder stops failed: ${failure.message}")
+        }
+        val response = res.value as za.co.etaxi.app.core.network.AddStopResponseDto
+        val trip = refreshActive(tripId) ?: response.trip.toDomain()
+        return trip
+    }
+
     override suspend fun rateDriver(submission: RatingSubmission) {
         val active = _activeTrip.value
         val toUserId = active?.driver?.id ?: return
@@ -288,7 +302,14 @@ class RemoteRiderRepository(
             status = parseStatus(status),
             pickup = pickup,
             dropoff = dropoff,
-            stops = stops.map { Place(label = "Stop", address = it.address, location = LatLng(it.lat, it.lng)) },
+            stops = stops.map {
+                Place(
+                    label = "Stop",
+                    address = it.address,
+                    location = LatLng(it.lat, it.lng),
+                    id = it.id,
+                )
+            },
             vehicleClass = cls,
             fareCents = finalFareCents ?: estimatedFareCents,
             distanceKm = (distanceMeters ?: 0) / 1000.0,
